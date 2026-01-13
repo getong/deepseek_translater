@@ -23,6 +23,7 @@ DRY_RUN=false
 STEP_START=1
 STEP_END=7
 REINSTALL_PACKAGES=false
+OCR_MODE=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -72,6 +73,7 @@ OPTIONS:
     -l, --ilang LANG        Input language (default: auto)
     --olang LANG           Output language (default: zh)
     -p, --prompt TEXT      Custom prompt for translation (step 3)
+    --ocr                  Use OCR mode for scanned PDF (each page is an image)
     --clean                Clean temp directory before starting
     --no-skip              Don't skip existing intermediate files
     --reinstall-packages   Reinstall Python packages in virtual environment
@@ -103,7 +105,10 @@ EXAMPLES:
 
     # Clean temp and run with verbose output
     ${SCRIPT_NAME} --clean -v book.epub
-    
+
+    # Use OCR mode for scanned PDF books
+    ${SCRIPT_NAME} --ocr scanned_book.pdf
+
     # Use custom prompt for translation
     ${SCRIPT_NAME} -p "Focus on technical accuracy and use formal language" book.pdf
 
@@ -281,6 +286,10 @@ parse_args() {
                 REINSTALL_PACKAGES=true
                 shift
                 ;;
+            --ocr)
+                OCR_MODE=true
+                shift
+                ;;
             --start-step)
                 STEP_START="$2"
                 if [[ ! "$STEP_START" =~ ^[1-7]$ ]]; then
@@ -399,6 +408,7 @@ show_config() {
     echo "  Input language: $INPUT_LANG"
     echo "  Output language: $OUTPUT_LANG"
     echo "  Custom prompt: ${CUSTOM_PROMPT:-'None'}"
+    echo "  OCR mode: $OCR_MODE"
     echo "  Steps to run: $STEP_START-$STEP_END"
     echo "  Clean temp: $CLEAN_TEMP"
     echo "  Skip existing: $SKIP_EXISTING"
@@ -432,9 +442,50 @@ main() {
     
     # Record start time
     local start_time=$(date +%s)
-    
+
+    # OCR mode for scanned PDF files
+    if [[ "$OCR_MODE" == true ]]; then
+        if [[ "${INPUT_FILE}" != *.pdf ]] && [[ "${INPUT_FILE}" != *.PDF ]]; then
+            log_error "OCR mode only supports PDF files"
+            exit 2
+        fi
+
+        log_info "Using OCR mode for scanned PDF..."
+
+        if [[ "$DRY_RUN" == true ]]; then
+            log_info "[DRY RUN] Would convert PDF using OCR: $INPUT_FILE"
+        else
+            # Ensure virtual environment is activated
+            local venv_dir="${SCRIPT_DIR}/venv"
+            if [[ -d "$venv_dir" ]]; then
+                source "$venv_dir/bin/activate"
+            fi
+
+            # Check if 01_ocr_to_md.py exists
+            if [[ ! -f "${SCRIPT_DIR}/01_ocr_to_md.py" ]]; then
+                log_error "OCR converter not found: 01_ocr_to_md.py"
+                exit 3
+            fi
+
+            # Convert PDF using OCR
+            local ocr_cmd="python3 ${SCRIPT_DIR}/01_ocr_to_md.py \"$INPUT_FILE\" -l \"$INPUT_LANG\" --olang \"$OUTPUT_LANG\""
+
+            if [[ "$VERBOSE" == true ]]; then
+                log_info "Executing: $ocr_cmd"
+            fi
+
+            if ! eval $ocr_cmd; then
+                log_error "OCR conversion failed"
+                exit 1
+            fi
+
+            log_success "OCR conversion completed successfully"
+
+            # Skip step 1 and 2 since OCR conversion is already done
+            STEP_START=3
+        fi
     # Convert supported file formats using Calibre HTMLZ method
-    if [[ "${INPUT_FILE}" == *.epub ]] || [[ "${INPUT_FILE}" == *.EPUB ]] || [[ "${INPUT_FILE}" == *.pdf ]] || [[ "${INPUT_FILE}" == *.PDF ]] || [[ "${INPUT_FILE}" == *.docx ]] || [[ "${INPUT_FILE}" == *.DOCX ]]; then
+    elif [[ "${INPUT_FILE}" == *.epub ]] || [[ "${INPUT_FILE}" == *.EPUB ]] || [[ "${INPUT_FILE}" == *.pdf ]] || [[ "${INPUT_FILE}" == *.PDF ]] || [[ "${INPUT_FILE}" == *.docx ]] || [[ "${INPUT_FILE}" == *.DOCX ]]; then
         log_info "Detected supported file format, converting via Calibre HTMLZ..."
         
         local original_file="$INPUT_FILE"
