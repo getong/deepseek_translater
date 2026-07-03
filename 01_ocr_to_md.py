@@ -13,8 +13,8 @@ import tempfile
 import shutil
 
 # OCR API endpoint
+#OCR_API_URL = "http://hemory.net:8092/ocr"
 OCR_API_URL = "http://10.17.0.55:8092/ocr"
-
 
 def convert_pdf_to_images(pdf_file, output_dir):
     """Convert PDF pages to images using PyMuPDF"""
@@ -62,14 +62,13 @@ def ocr_image(image_path):
             response = requests.post(OCR_API_URL, files=files, timeout=120)
 
         if response.status_code == 200:
-            # API returns markdown string directly
-            markdown_content = response.text
-            # Remove surrounding quotes if present (JSON string response)
-            if markdown_content.startswith('"') and markdown_content.endswith('"'):
-                markdown_content = markdown_content[1:-1]
-            # Unescape newlines
-            markdown_content = markdown_content.replace('\\n', '\n')
-            return markdown_content
+            # API returns JSON: {"success": true, "content": "markdown..."}
+            result = response.json()
+            if result.get('success') == True:
+                return result.get('content', '')
+            else:
+                print(f"  ✗ OCR API returned failure: {result}")
+                return None
         else:
             print(f"  ✗ OCR API error: {response.status_code} - {response.text}")
             return None
@@ -164,12 +163,8 @@ def main():
     parser.add_argument("input_file", help="Input PDF file (scanned/OCR type)")
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
-    parser.add_argument("--ocr-url", default=OCR_API_URL, help=f"OCR API URL (default: {OCR_API_URL})")
 
     args = parser.parse_args()
-
-    global OCR_API_URL
-    OCR_API_URL = args.ocr_url
 
     input_file = args.input_file
 
