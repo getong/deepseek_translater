@@ -14,7 +14,7 @@ import shutil
 
 # OCR API endpoint
 #OCR_API_URL = "http://hemory.net:8092/ocr"
-OCR_API_URL = "http://10.17.0.55:8092/ocr"
+OCR_API_URL = "http://10.17.0.123:8092/ocr"
 
 def convert_pdf_to_images(pdf_file, output_dir):
     """Convert PDF pages to images using PyMuPDF"""
