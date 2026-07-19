@@ -9,3 +9,5 @@ pdf2image
 pypandoc
 openai
 python-dotenv
+requests
+httpx[socks]
