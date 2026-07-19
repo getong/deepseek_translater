@@ -61,7 +61,7 @@ show_help() {
 ${SCRIPT_NAME} v${VERSION} - Book Translation Tool
 
 DESCRIPTION:
-    Translates PDF, DOCX, or EPUB files to HTML using Claude CLI.
+    Translates PDF, DOCX, or EPUB files to HTML using DeepSeek API.
     Automatically runs all 7 steps in sequence.
     Creates and manages Python virtual environment automatically.
     Uses Calibre for unified file conversion via HTMLZ format.
@@ -86,7 +86,7 @@ OPTIONS:
 STEPS:
     1. Environment preparation and parameter parsing
     2. Split file to markdown and extract images
-    3. Translate markdown files using Claude API
+    3. Translate markdown files using DeepSeek API
     4. Merge translated markdown files
     5. Convert markdown to HTML with template
     6. Generate and insert table of contents
@@ -122,8 +122,8 @@ EXAMPLES:
     ${SCRIPT_NAME} --dry-run book.pdf
 
 REQUIREMENTS:
-    - Python 3.6+
-    - Claude CLI (https://docs.anthropic.com/en/docs/claude-code)
+    - Python 3.8+
+    - DeepSeek API key (set in .env file)
     - Calibre (for PDF/DOCX/EPUB support): https://calibre-ebook.com/
     - Internet connection (for initial package installation)
     
@@ -136,7 +136,7 @@ EXIT CODES:
     1   General error
     2   Invalid arguments
     3   Missing dependencies
-    4   Claude CLI not found
+    4   DeepSeek API key not found
     5   Input file not found
 
 EOF
@@ -179,10 +179,10 @@ setup_venv() {
         
         if [[ -f "$requirements_file" ]]; then
             log_info "Installing packages from requirements.txt..."
-            pip install -r "$requirements_file"
+            python3 -m pip install -r "$requirements_file"
         else
             log_info "Installing essential packages..."
-            pip install python-docx PyMuPDF ebooklib beautifulsoup4 lxml markdown Pillow pdf2image pypandoc
+            python3 -m pip install python-docx PyMuPDF ebooklib beautifulsoup4 lxml markdown Pillow pdf2image pypandoc openai python-dotenv
         fi
         
         if [[ $? -ne 0 ]]; then
@@ -196,6 +196,12 @@ setup_venv() {
         log_success "Python packages installation completed"
     else
         log_info "Python packages already installed, skipping installation"
+    fi
+
+    # Existing virtual environments may predate the DeepSeek migration.
+    if ! python3 -c "import openai, dotenv" &> /dev/null; then
+        log_info "Installing DeepSeek API dependencies..."
+        python3 -m pip install openai python-dotenv
     fi
 }
 
@@ -248,10 +254,16 @@ check_dependencies() {
         fi
     fi
     
-    # Check Claude CLI availability
-    if ! command -v claude &> /dev/null; then
-        log_error "Claude CLI not found"
-        log_error "Please install Claude CLI: https://docs.anthropic.com/en/docs/claude-code"
+    # Check for DeepSeek API key
+    if [[ -z "${DEEPSEEK_API_KEY:-}" ]] && [[ ! -f "${SCRIPT_DIR}/.env" ]]; then
+        log_error ".env file not found"
+        log_error "Please create a .env file with DEEPSEEK_API_KEY"
+        exit 4
+    fi
+
+    if [[ -z "${DEEPSEEK_API_KEY:-}" ]] && ! grep -Eq '^[[:space:]]*DEEPSEEK_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]+' "${SCRIPT_DIR}/.env" 2>/dev/null; then
+        log_error "DEEPSEEK_API_KEY not found in .env file"
+        log_error "Please add your DeepSeek API key to .env"
         exit 4
     fi
     
@@ -529,7 +541,7 @@ main() {
     local step_descriptions=(
         "Environment preparation and parameter parsing"
         "Split file to markdown and extract images"
-        "Translate markdown files using Claude API"
+        "Translate markdown files using DeepSeek API"
         "Merge translated markdown files"
         "Convert markdown to HTML with template"
         "Generate and insert table of contents"

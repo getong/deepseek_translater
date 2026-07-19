@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-PowerPoint Translation Tool using Claude CLI
-Reads input.pptx, translates text content using Claude CLI, and outputs output.pptx
+PowerPoint Translation Tool using DeepSeek API
+Reads input.pptx, translates text content using DeepSeek API, and outputs output.pptx
 """
 
 import os
@@ -263,7 +263,7 @@ def translate_json_texts(json_file, output_lang, custom_prompt=None, max_retries
                 print(f"    Retry attempt {attempt + 1}/{max_retries}")
             
             try:
-                translation_result = translate_text_with_claude(original_text, output_lang, custom_prompt, 1)
+                translation_result = translate_text_with_deepseek(original_text, output_lang, custom_prompt, 1)
                 
                 if translation_result and not translation_result.get("is_error", False):
                     translated_text = translation_result.get("text", "")
@@ -573,119 +573,79 @@ WARNING: 如果不按照上述格式输出，翻译将被视为失败并重试�
     
     return base_prompt
 
-def translate_text_with_claude(text, output_lang, custom_prompt=None, max_retries=3):
-    """Translate text using Claude CLI with retry mechanism"""
+def translate_text_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3):
+    """Translate text using DeepSeek API with retry mechanism"""
     if not text or not text.strip():
         return {"text": text, "is_error": False}
-    
-    # Check if translation failed and return original with error flag
+
     def return_with_error(original_text, error_reason=""):
         print(f"        Translation failed: {error_reason}")
         return {"text": original_text, "is_error": True}
-    
-    # Try translation with retries
+
+    try:
+        from deepseek_client import translate as ds_translate
+    except ImportError:
+        return return_with_error(text, "deepseek_client module not found")
+
     for attempt in range(max_retries):
         if attempt > 0:
             print(f"        Retry attempt {attempt + 1}/{max_retries}")
-        
-        # Create translation prompt
+
         prompt = create_translation_prompt(output_lang, custom_prompt)
-        
+
         try:
-            # Prepare the full input text
             full_input = f"{prompt}\n\n{text}"
-            
-            # Use Claude CLI
-            claude_command = ['claude']
-            
-            # Run Claude CLI command
-            # Set environment variables to skip interactive prompts
-            env = os.environ.copy()
-            env['CLAUDE_NON_INTERACTIVE'] = '1'
-            env['CLAUDE_AUTO_APPROVE'] = '1'
-            
-            result = subprocess.run(
-                claude_command,
-                input=full_input,
-                capture_output=True,
-                text=True,
-                timeout=120,  # 2 minute timeout
-                encoding='utf-8',
-                env=env
-            )
-            
-            if result.returncode == 0:
-                translated_text = result.stdout.strip()
-                
-                # Extract content between <!-- TRANSLATION_START --> and <!-- TRANSLATION_END --> markers
-                start_marker = '<!-- TRANSLATION_START -->'
-                end_marker = '<!-- TRANSLATION_END -->'
-                
-                start_idx = translated_text.find(start_marker)
-                end_idx = translated_text.find(end_marker)
-                
-                if start_idx != -1 and end_idx != -1:
-                    # Extract the content between markers
-                    content_start = start_idx + len(start_marker)
-                    extracted_content = translated_text[content_start:end_idx].strip()
-                    
-                    # Validate extracted content
-                    if extracted_content and len(extracted_content.strip()) > 0:
-                        return {"text": extracted_content, "is_error": False}
-                    else:
-                        print(f"        Attempt {attempt + 1}: Empty content between markers")
-                        continue  # Retry
+            translated_text = ds_translate(full_input, timeout=120)
+
+            if translated_text is None:
+                print(f"        Attempt {attempt + 1}: DeepSeek API returned None")
+                continue
+
+            translated_text = translated_text.strip()
+
+            start_marker = '<!-- TRANSLATION_START -->'
+            end_marker = '<!-- TRANSLATION_END -->'
+
+            start_idx = translated_text.find(start_marker)
+            end_idx = translated_text.find(end_marker)
+
+            if start_idx != -1 and end_idx != -1:
+                content_start = start_idx + len(start_marker)
+                extracted_content = translated_text[content_start:end_idx].strip()
+
+                if extracted_content and len(extracted_content.strip()) > 0:
+                    return {"text": extracted_content, "is_error": False}
                 else:
-                    # If required markers not found, this is an error
-                    print(f"        Attempt {attempt + 1}: Required markers <!-- TRANSLATION_START --> and <!-- TRANSLATION_END --> not found")
-                    print(f"        Raw output: {translated_text[:200]}...")
-                    continue  # Retry
+                    print(f"        Attempt {attempt + 1}: Empty content between markers")
+                    continue
             else:
-                error_msg = result.stderr.strip() if result.stderr else "No error message"
-                print(f"        Attempt {attempt + 1}: CLI error (code {result.returncode}): {error_msg}")
-                continue  # Retry
-                
-        except subprocess.TimeoutExpired:
-            print(f"        Attempt {attempt + 1}: Translation timeout (2 minutes)")
-            continue  # Retry
-        except FileNotFoundError:
-            return return_with_error(text, "'claude' command not found")
+                print(f"        Attempt {attempt + 1}: Required markers not found")
+                print(f"        Raw output: {translated_text[:200]}...")
+                continue
+
         except Exception as e:
             print(f"        Attempt {attempt + 1}: Exception: {e}")
-            continue  # Retry
-    
-    # All retries failed
+            continue
+
     return return_with_error(text, f"Translation failed after {max_retries} attempts")
 
 
-
-def check_claude_cli():
-    """Check if Claude CLI is available"""
+def check_deepseek_api():
+    """Check if DeepSeek API is available"""
     try:
-        result = subprocess.run(['claude', '--version'], 
-                              capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            version_info = result.stdout.strip().split('\n')[-1]
-            print(f"Claude CLI available: {version_info}")
-            return True
-        else:
-            print(f"Claude CLI check failed with code {result.returncode}")
-            return False
-    except subprocess.TimeoutExpired:
-        print("Error: Claude CLI version check timed out")
-        return False
-    except FileNotFoundError:
-        print("Error: 'claude' command not found")
-        print("Please ensure Claude CLI is installed and in your PATH")
+        from deepseek_client import check_api
+        return check_api()
+    except ImportError:
+        print("Error: deepseek_client module not found")
         return False
     except Exception as e:
-        print(f"Error checking Claude CLI: {e}")
+        print(f"Error checking DeepSeek API: {e}")
         return False
 
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description="PowerPoint Translation Tool using Claude CLI"
+        description="PowerPoint Translation Tool using DeepSeek API"
     )
     
     parser.add_argument(
@@ -799,8 +759,8 @@ def main():
             print("Error: --olang is required for JSON translation mode")
             sys.exit(1)
         
-        # Check Claude CLI availability
-        if not check_claude_cli():
+        # Check DeepSeek API availability
+        if not check_deepseek_api():
             sys.exit(1)
         
         # Create temp directory with language identifier
@@ -875,8 +835,8 @@ def main():
         print("Error: --olang is required for translation mode")
         sys.exit(1)
     
-    # Check Claude CLI availability
-    if not check_claude_cli():
+    # Check DeepSeek API availability
+    if not check_deepseek_api():
         sys.exit(1)
     
     # Create temp directory based on input filename with language identifier

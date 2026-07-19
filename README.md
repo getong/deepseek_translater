@@ -1,6 +1,6 @@
-# Claude Translator - 文档翻译工具集
+# DeepSeek Translator - 文档翻译工具集
 
-这是一个基于 Claude AI 的文档翻译工具集，支持多种文档格式的批量翻译。
+这是一个基于 DeepSeek API 的文档翻译工具集，支持多种文档格式的批量翻译。
 
 [![Version](https://img.shields.io/badge/version-v2.1-blue.svg)](https://github.com/your-username/claude_translater)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -50,8 +50,8 @@ PDF/DOCX/EPUB → Calibre → HTMLZ → 解压 → HTML + Images
 brew install --cask calibre  # macOS
 # 或者 sudo apt-get install calibre  # Linux
 
-# 安装 Claude CLI
-# 参考：https://docs.anthropic.com/en/docs/claude-code
+# 在项目根目录创建 .env，并填写 DeepSeek API key
+printf 'DEEPSEEK_API_KEY=your_api_key_here\n' > .env
 ```
 
 ### 2. 一键翻译
@@ -92,11 +92,11 @@ brew install --cask calibre  # macOS
 
 ### 基础依赖
 ```bash
-# Python 3.6+
+# Python 3.8+
 python3 --version
 
-# Claude CLI
-# 参考：https://docs.anthropic.com/en/docs/claude-code
+# DeepSeek API key
+# 在项目根目录的 .env 中配置 DEEPSEEK_API_KEY
 
 # Calibre（新增必需）
 # macOS: brew install --cask calibre
@@ -107,7 +107,7 @@ python3 --version
 ### Python 包依赖
 ```bash
 # 自动安装的包（通过 translatebook.sh）
-pip install python-docx PyMuPDF ebooklib beautifulsoup4 lxml markdown Pillow pdf2image pypandoc
+pip install -r requirements.txt
 
 # PowerPoint 翻译工具额外依赖
 pip install python-pptx
@@ -179,7 +179,7 @@ pypandoc → input.md → 内容清理 → 智能分块
 
 ### 2. 翻译流程（步骤3-7）
 ```
-page0001.md ~ page0042.md → Claude翻译 → 合并 → HTML → 目录 → 输出
+page0001.md ~ page0042.md → DeepSeek翻译 → 合并 → HTML → 目录 → 输出
 ```
 
 ### 3. Temp目录管理机制 (v2.1新增)
@@ -246,6 +246,7 @@ page0001.md ~ page0042.md → Claude翻译 → 合并 → HTML → 目录 → �
 | 问题 | 解决方案 |
 |------|----------|
 | Calibre未安装 | `brew install --cask calibre` (macOS) 或 `sudo apt-get install calibre` (Linux) |
+| DeepSeek认证失败 | 检查项目根目录 `.env` 中的 `DEEPSEEK_API_KEY` |
 | pypandoc缺失 | `pip install pypandoc` |
 | 转换失败 | 检查文件格式和Calibre版本 |
 | 权限问题 | 确保脚本有执行权限：`chmod +x translatebook.sh` |
@@ -301,7 +302,7 @@ python3 -c "import pypandoc; print('pypandoc OK')"  # 检查pypandoc
 ### v1.0
 - 基础PDF/DOCX/EPUB翻译功能
 - 7步处理流程
-- Claude API集成
+- DeepSeek API集成
 
 ## 项目状态
 
@@ -337,4 +338,4 @@ python3 01_convert_to_htmlz.py test.pdf --chunk-size 5000
 
 ---
 
-*本工具集基于 Claude AI 和 Calibre 提供高质量文档翻译服务，致力于解决多格式文档转换和翻译中的实际问题。*
+*本工具集基于 DeepSeek API 和 Calibre 提供高质量文档翻译服务，致力于解决多格式文档转换和翻译中的实际问题。*

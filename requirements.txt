@@ -1,0 +1,11 @@
+python-docx
+PyMuPDF
+ebooklib
+beautifulsoup4
+lxml
+markdown
+Pillow
+pdf2image
+pypandoc
+openai
+python-dotenv

@@ -20,18 +20,49 @@ try:
 except ImportError:
     MARKDOWN_AVAILABLE = False
 
-def translate_title_with_claude(title, target_lang, custom_prompt=None):
-    """Translate book title using Claude CLI"""
+def extract_title_from_markers(text):
+    """Extract title content between START and END markers"""
+    start_marker = '<!-- START -->'
+    end_marker = '<!-- END -->'
+
+    start_pos = text.find(start_marker)
+    end_pos = text.find(end_marker)
+
+    if start_pos == -1:
+        for variation in ['<!--START-->', '<!-- START-->', '<!--START -->', '<!-- START-->']:
+            start_pos = text.find(variation)
+            if start_pos != -1:
+                start_marker = variation
+                break
+
+    if end_pos == -1:
+        for variation in ['<!--END-->', '<!-- END-->', '<!--END -->', '<!-- END-->']:
+            end_pos = text.find(variation)
+            if end_pos != -1:
+                end_marker = variation
+                break
+
+    if start_pos != -1 and end_pos != -1 and start_pos < end_pos:
+        content_start = start_pos + len(start_marker)
+        extracted = text[content_start:end_pos].strip()
+        return extracted
+
+    return None
+
+
+def translate_title_with_deepseek(title, target_lang, custom_prompt=None):
+    """Translate book title using DeepSeek API"""
     if not title or not title.strip():
         return "翻译书籍"  # Default fallback
-    
+
     try:
+        from deepseek_client import translate as ds_translate
+
         print(f"Translating title '{title}' to {target_lang}...")
-        
-        # Create translation prompt
+
         lang_map = {
             'zh': 'Chinese',
-            'en': 'English', 
+            'en': 'English',
             'ja': 'Japanese',
             'ko': 'Korean',
             'fr': 'French',
@@ -41,9 +72,9 @@ def translate_title_with_claude(title, target_lang, custom_prompt=None):
             'pt': 'Portuguese',
             'ru': 'Russian'
         }
-        
+
         target_lang_name = lang_map.get(target_lang.lower(), target_lang)
-        
+
         prompt = f"""Please translate this book title to {target_lang_name}. 
 CRITICAL OUTPUT FORMAT: You must strictly follow this format:
 - First line must be: <!-- START -->
@@ -58,70 +89,24 @@ Title: {title}"""
 
         if custom_prompt:
             prompt += f"\n\nADDITIONAL INSTRUCTIONS:\n{custom_prompt}"
-        
-        # Run Claude CLI
-        process = subprocess.Popen(
-            ['claude'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8'
-        )
-        
-        stdout, stderr = process.communicate(input=prompt, timeout=30)
-        
-        if process.returncode == 0 and stdout.strip():
-            # Extract content between START and END markers
-            def extract_title_from_markers(text):
-                """Extract title content between START and END markers"""
-                start_marker = '<!-- START -->'
-                end_marker = '<!-- END -->'
-                
-                # Find the positions of markers
-                start_pos = text.find(start_marker)
-                end_pos = text.find(end_marker)
-                
-                if start_pos == -1:
-                    # Try to find markers with variations
-                    for variation in ['<!--START-->', '<!-- START-->', '<!--START -->', '<!-- START-->']:
-                        start_pos = text.find(variation)
-                        if start_pos != -1:
-                            start_marker = variation
-                            break
-                
-                if end_pos == -1:
-                    # Try to find markers with variations
-                    for variation in ['<!--END-->', '<!-- END-->', '<!--END -->', '<!-- END-->']:
-                        end_pos = text.find(variation)
-                        if end_pos != -1:
-                            end_marker = variation
-                            break
-                
-                if start_pos != -1 and end_pos != -1 and start_pos < end_pos:
-                    # Extract content between markers
-                    content_start = start_pos + len(start_marker)
-                    extracted = text[content_start:end_pos].strip()
-                    return extracted
-                
-                return None
-            
-            raw_output = stdout.strip()
-            translated_title = extract_title_from_markers(raw_output)
-            
+
+        raw_output = ds_translate(prompt, timeout=30)
+
+        if raw_output and raw_output.strip():
+            translated_title = extract_title_from_markers(raw_output.strip())
+
             if translated_title:
-                # Clean up any formatting markers
                 translated_title = translated_title.replace('**', '').replace('*', '').strip()
-                print(f"✓ Title translated: '{title}' -> '{translated_title}'")
+                print(f"Title translated: '{title}' -> '{translated_title}'")
                 return translated_title
             else:
                 print(f"Warning: Failed to extract title from markers. Raw output: {raw_output[:100]}...")
                 print(f"Using original title: {title}")
                 return title
         else:
-            print(f"Warning: Title translation failed, using original: {stderr}")
+            print(f"Warning: Title translation failed, using original")
             return title
-            
+
     except Exception as e:
         print(f"Warning: Error translating title: {e}, using original")
         return title
@@ -654,7 +639,7 @@ def main():
     translated_title = "翻译书籍"  # Default fallback
     
     if original_title:
-        translated_title = translate_title_with_claude(original_title, output_lang, custom_prompt)
+        translated_title = translate_title_with_deepseek(original_title, output_lang, custom_prompt)
         # Add book title marks (书名号) for Chinese titles
         if output_lang == 'zh':
             translated_title = f"《{translated_title}》"
