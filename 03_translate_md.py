@@ -10,6 +10,7 @@ import glob
 import time
 import argparse
 import re
+from collections import Counter
 
 from deepseek_client import translate as ds_translate, check_api
 
@@ -78,11 +79,12 @@ IMPORTANT REQUIREMENTS:
     - 如果输出不符合此格式，系统将重新请求翻译
 8.  表达清晰简洁，不要使用复杂的句式。请严格按顺序翻译，不要跳过任何内容。
 9.  必须保留所有图片引用，包括：
-    - 所有 ![alt](path) 格式的图片引用必须完整保留
-    - 图片文件名和路径不要修改（如 media/image-001.png）
+    - 只保留原文中实际存在的 ![alt](path) 图片引用，并且必须完整保留
+    - 图片文件名和路径不要修改
     - 图片alt文本可以翻译，但必须保留图片引用结构
     - 不要删除、过滤或忽略任何图片相关内容
-    - 图片引用示例：![Figure 1: Data Flow](media/image-001.png) → ![图1：数据流](media/image-001.png)
+    - 绝对不要根据 Figure、Figure 1.1、图注或上下文自行新增图片引用
+    - 普通 Figure/图注文本仍然是普通文本，只翻译文字，不要转换成 ![]() 语法
 10. 智能识别和处理多级标题，按照以下规则添加markdown标记：
     - 主标题（书名、章节名等）使用 # 标记
     - 一级标题（大节标题）使用 ## 标记  
@@ -257,6 +259,73 @@ def validate_code_blocks(source, translated):
     return True, None
 
 
+MARKDOWN_IMAGE_PATTERN = re.compile(
+    r'!\[(?P<alt>[^\]]*)\]\(\s*'
+    r'(?:<(?P<angle_path>[^>\n]+)>|(?P<plain_path>[^\s)\n]+))'
+    r'(?:\s+(?:"[^"\n]*"|\'[^\'\n]*\'|\([^\)\n]*\)))?\s*\)',
+    re.MULTILINE,
+)
+
+
+def extract_markdown_image_paths(text):
+    """Return local/remote image paths in Markdown order, ignoring translated alt text."""
+    return [
+        match.group('angle_path') or match.group('plain_path')
+        for match in MARKDOWN_IMAGE_PATTERN.finditer(text)
+    ]
+
+
+def remove_added_image_references(source, translated):
+    """Turn model-added image syntax back into its translated alt text."""
+    source_paths = extract_markdown_image_paths(source)
+    translated_matches = list(MARKDOWN_IMAGE_PATTERN.finditer(translated))
+    if len(translated_matches) <= len(source_paths):
+        return translated, 0
+
+    remaining_paths = Counter(source_paths)
+    replacements = []
+    for match in translated_matches:
+        image_path = match.group('angle_path') or match.group('plain_path')
+        if remaining_paths[image_path] > 0:
+            remaining_paths[image_path] -= 1
+            continue
+        replacements.append((match.start(), match.end(), match.group('alt')))
+
+    corrected = translated
+    for start, end, alt_text in reversed(replacements):
+        corrected = corrected[:start] + alt_text + corrected[end:]
+
+    is_valid, _ = validate_image_references(source, corrected)
+    if not is_valid:
+        return translated, 0
+    return corrected, len(replacements)
+
+
+def validate_image_references(source, translated):
+    """Ensure translation preserves every image path in its original order."""
+    source_paths = extract_markdown_image_paths(source)
+    translated_paths = extract_markdown_image_paths(translated)
+    if source_paths == translated_paths:
+        return True, None
+
+    if len(source_paths) != len(translated_paths):
+        return False, (
+            f"image reference count changed "
+            f"({len(source_paths)} -> {len(translated_paths)})"
+        )
+
+    for index, (source_path, translated_path) in enumerate(
+        zip(source_paths, translated_paths), 1
+    ):
+        if source_path != translated_path:
+            return False, (
+                f"image path {index} changed "
+                f"({source_path!r} -> {translated_path!r})"
+            )
+
+    return False, "image reference order changed"
+
+
 def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3):
     """Translate text using DeepSeek API with retry mechanism"""
 
@@ -280,6 +349,18 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
             extracted_content = extract_content_between_markers(translated_text)
 
             if extracted_content and len(extracted_content.strip()) > 0:
+                extracted_content, removed_images = remove_added_image_references(
+                    text, extracted_content
+                )
+                if removed_images:
+                    print(
+                        f"    Corrected {removed_images} model-added image "
+                        "reference(s), preserving their alt text"
+                    )
+                images_are_valid, image_error = validate_image_references(text, extracted_content)
+                if not images_are_valid:
+                    print(f"    Attempt {attempt + 1}: Rejected translation because {image_error}")
+                    continue
                 code_is_valid, code_error = validate_code_blocks(text, extracted_content)
                 if not code_is_valid:
                     print(f"    Attempt {attempt + 1}: Rejected translation because {code_error}")
@@ -328,6 +409,23 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
                     if start_line != -1 and end_line != -1 and start_line < end_line:
                         emergency_content = '\n'.join(lines[start_line+1:end_line]).strip()
                         if emergency_content:
+                            emergency_content, removed_images = remove_added_image_references(
+                                text, emergency_content
+                            )
+                            if removed_images:
+                                print(
+                                    f"    Corrected {removed_images} model-added image "
+                                    "reference(s), preserving their alt text"
+                                )
+                            images_are_valid, image_error = validate_image_references(
+                                text, emergency_content
+                            )
+                            if not images_are_valid:
+                                print(
+                                    "    Emergency extraction rejected because "
+                                    f"{image_error}"
+                                )
+                                continue
                             code_is_valid, code_error = validate_code_blocks(text, emergency_content)
                             if code_is_valid:
                                 print(f"    Emergency extraction successful")
@@ -367,13 +465,6 @@ def translate_markdown_files(temp_dir, output_lang, custom_prompt=None):
         output_filename = f"output_{filename}"
         output_path = os.path.join(temp_dir, output_filename)
 
-        if os.path.exists(output_path):
-            print(f"  [{i}/{total_files}] Skipping {filename} (already translated)")
-            skipped_count += 1
-            continue
-
-        print(f"  [{i}/{total_files}] Translating {filename}...")
-
         try:
             with open(md_file, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -381,6 +472,26 @@ def translate_markdown_files(temp_dir, output_lang, custom_prompt=None):
             print(f"    Error reading {filename}: {e}")
             failed_count += 1
             continue
+
+        if os.path.exists(output_path):
+            try:
+                with open(output_path, 'r', encoding='utf-8') as f:
+                    existing_translation = f.read()
+                images_are_valid, image_error = validate_image_references(
+                    content, existing_translation
+                )
+                if images_are_valid:
+                    print(f"  [{i}/{total_files}] Skipping {filename} (already translated)")
+                    skipped_count += 1
+                    continue
+                print(
+                    f"  [{i}/{total_files}] Re-translating {filename}: "
+                    f"existing output has invalid images ({image_error})"
+                )
+            except OSError as exc:
+                print(f"  [{i}/{total_files}] Could not validate existing output: {exc}")
+        else:
+            print(f"  [{i}/{total_files}] Translating {filename}...")
 
         if len(content.strip()) < 1:
             print(f"    Skipping {filename} (too short)")

@@ -17,6 +17,22 @@ import re
 MARKDOWN_FORMAT_MARKER = ".markdown_format_v2"
 CALIBRE_CODE_PARAGRAPH_CLASSES = {"calibre26", "calibre33"}
 
+
+def markdown_image_cache_is_complete(markdown_file):
+    """Return whether Markdown has image references and all local files exist."""
+    with open(markdown_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    matches = re.finditer(
+        r'!\[[^\]]*\]\(\s*(?:<([^>\n]+)>|([^\s)\n]+))',
+        content,
+        re.MULTILINE,
+    )
+    paths = [match.group(1) or match.group(2) for match in matches]
+    if not paths:
+        return False
+    markdown_dir = os.path.dirname(os.path.abspath(markdown_file))
+    return all(os.path.isfile(os.path.join(markdown_dir, path)) for path in paths)
+
 def find_calibre_convert():
     """Find ebook-convert command from Calibre installation"""
     possible_paths = [
@@ -504,10 +520,30 @@ def main():
     if file_ext == '.pdf':
         print("=== Native PDF to Markdown ===")
         try:
-            from pdf2md import pdf_to_markdown
+            from pdf2md import PDF_IMAGE_CACHE_MARKER, pdf_to_markdown
             
             input_md = os.path.join(temp_dir, "input.md")
-            
+            image_marker = os.path.join(temp_dir, PDF_IMAGE_CACHE_MARKER)
+
+            if os.path.exists(input_md) and not os.path.exists(image_marker):
+                if markdown_image_cache_is_complete(input_md):
+                    with open(image_marker, 'w', encoding='utf-8') as f:
+                        f.write("Existing Markdown image references verified.\n")
+                    print("✓ Verified existing PDF Markdown image cache")
+                else:
+                    translated_pages = glob.glob(os.path.join(temp_dir, 'output_page*.md'))
+                    if translated_pages:
+                        raise RuntimeError(
+                            "Cached input.md was created without extracted PDF images, but "
+                            "translations already exist. Preserve the translated files, then "
+                            "rerun with a clean temp directory so image-aware source chunks "
+                            "can be translated."
+                        )
+                    print("Refreshing cached PDF Markdown to extract images...")
+                    os.remove(input_md)
+                    for page_file in glob.glob(os.path.join(temp_dir, 'page*.md')):
+                        os.remove(page_file)
+
             if os.path.exists(input_md):
                 print(f"✓ Skipping PDF to Markdown conversion - input.md already exists")
             else:

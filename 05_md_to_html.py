@@ -6,11 +6,12 @@ Converts output.md to HTML with images and template
 
 import os
 import sys
-import shutil
 import subprocess
 import re
 import argparse
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 # Try to import markdown, fallback to basic conversion if not available
 try:
@@ -138,8 +139,18 @@ def check_pandoc_available():
 def convert_with_pandoc(md_file, html_file, template_file=None, title="翻译书籍"):
     """Convert markdown to HTML using pandoc"""
     print("Converting markdown to HTML using pandoc...")
-    
-    cmd = ['pandoc', md_file, '-o', html_file]
+
+    md_file = os.path.abspath(md_file)
+    html_file = os.path.abspath(html_file)
+    resource_dir = os.path.dirname(md_file)
+    cmd = [
+        'pandoc',
+        md_file,
+        '-o',
+        html_file,
+        '--resource-path',
+        resource_dir,
+    ]
     
     # Use template if available
     if template_file and os.path.exists(template_file):
@@ -159,6 +170,8 @@ def convert_with_pandoc(md_file, html_file, template_file=None, title="翻译书
         print(f"  Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         print("✓ Successfully converted with pandoc")
+        if result.stderr.strip():
+            print(f"  Pandoc warnings: {result.stderr.strip()}")
         
         # Verify output file was created
         if os.path.exists(html_file):
@@ -171,6 +184,45 @@ def convert_with_pandoc(md_file, html_file, template_file=None, title="翻译书
         if e.stdout:
             print(f"  Stdout: {e.stdout}")
         return False
+
+
+class _ImageSourceParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.sources = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != 'img':
+            return
+        attributes = dict(attrs)
+        if attributes.get('src'):
+            self.sources.append(attributes['src'])
+
+
+def resolve_local_image_path(html_file, source):
+    """Resolve an HTML image source, returning None for non-local resources."""
+    parsed = urlsplit(source)
+    if parsed.scheme in {'http', 'https', 'data'} or parsed.netloc:
+        return None
+    if parsed.scheme == 'file':
+        return Path(unquote(parsed.path))
+    if parsed.scheme:
+        return None
+    return Path(html_file).resolve().parent / unquote(parsed.path)
+
+
+def find_missing_html_images(html_file):
+    """Return local image references that do not resolve beside the HTML file."""
+    parser = _ImageSourceParser()
+    with open(html_file, 'r', encoding='utf-8') as f:
+        parser.feed(f.read())
+
+    missing = []
+    for source in parser.sources:
+        image_path = resolve_local_image_path(html_file, source)
+        if image_path is not None and not image_path.is_file():
+            missing.append(source)
+    return missing
 
 def apply_template_to_html(html_content, template_file, output_file, title="翻译书籍"):
     """Apply a template to HTML content and save to output file"""
@@ -487,40 +539,6 @@ def create_default_html(content, title="翻译书籍"):
 </body>
 </html>"""
 
-def copy_images_to_output(temp_dir, output_dir):
-    """Copy image files to output directory"""
-    print("Copying images to output directory...")
-    
-    # Find all image files in temp directory
-    image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']
-    image_files = []
-    
-    for ext in image_extensions:
-        pattern = os.path.join(temp_dir, f'*{ext}')
-        import glob
-        image_files.extend(glob.glob(pattern))
-    
-    if not image_files:
-        print("No image files found")
-        return
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Copy images
-    copied_count = 0
-    for img_file in image_files:
-        try:
-            filename = os.path.basename(img_file)
-            dest_path = os.path.join(output_dir, filename)
-            shutil.copy2(img_file, dest_path)
-            print(f"  Copied: {filename}")
-            copied_count += 1
-        except Exception as e:
-            print(f"  Error copying {filename}: {e}")
-    
-    print(f"Copied {copied_count} image files")
-
 def process_html_separators(html_file):
     """Process page separators in HTML"""
     print("Processing page separators...")
@@ -669,9 +687,15 @@ def main():
     if not success:
         print("Error: Failed to convert markdown to HTML")
         sys.exit(1)
-    
-    # Copy images to temp directory
-    copy_images_to_output(temp_dir, temp_dir)
+
+    missing_images = find_missing_html_images(temp_html_file)
+    if missing_images:
+        print("Error: HTML contains local images that could not be found:")
+        for image_path in sorted(set(missing_images)):
+            print(f"  - {image_path}")
+        print("Fix the Markdown image paths before generating DOCX/EPUB/PDF files.")
+        sys.exit(1)
+    print("✓ Verified all local HTML image references")
     
     # Process HTML separators
     process_html_separators(temp_html_file)

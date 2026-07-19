@@ -14,6 +14,8 @@ import shutil
 from pathlib import Path
 import signal
 import re
+from html.parser import HTMLParser
+from urllib.parse import unquote, urlsplit
 
 def timeout_handler(signum, frame):
     """Handle timeout signal"""
@@ -136,45 +138,71 @@ a {
         print(f"Warning: Could not add font styling: {e}")
         return work_html
 
+class _ImageSourceParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.sources = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != 'img':
+            return
+        attributes = dict(attrs)
+        if attributes.get('src'):
+            self.sources.append(attributes['src'])
+
+
+def _resolve_local_image(html_file, source):
+    parsed = urlsplit(source)
+    if parsed.scheme in {'http', 'https', 'data'} or parsed.netloc:
+        return None
+    if parsed.scheme == 'file':
+        return Path(unquote(parsed.path)).resolve()
+    if parsed.scheme:
+        return None
+    return (Path(html_file).resolve().parent / unquote(parsed.path)).resolve()
+
+
 def copy_images_if_needed(html_file, temp_dir):
-    """Copy images directory if it exists alongside HTML"""
-    html_dir = os.path.dirname(html_file)
-    images_dirs = ['images', 'media', 'image', 'pics']
-    
-    total_image_count = 0
-    
-    # Copy all image directories found
-    for img_dir_name in images_dirs:
-        img_dir = os.path.join(html_dir, img_dir_name)
-        if os.path.exists(img_dir):
-            target_dir = os.path.join(temp_dir, img_dir_name)
-            try:
-                shutil.copytree(img_dir, target_dir, dirs_exist_ok=True)
-                image_count = len([f for f in os.listdir(target_dir) 
-                                 if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp'))])
-                print(f"✓ Copied {image_count} images from {img_dir_name}/")
-                total_image_count += image_count
-            except Exception as e:
-                print(f"Warning: Could not copy {img_dir_name}/: {e}")
-    
-    # Also copy any loose image files in the HTML directory
-    try:
-        for file in os.listdir(html_dir):
-            if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp')):
-                src_file = os.path.join(html_dir, file)
-                dst_file = os.path.join(temp_dir, file)
-                shutil.copy2(src_file, dst_file)
-                total_image_count += 1
-                print(f"✓ Copied loose image file: {file}")
-    except Exception as e:
-        print(f"Warning: Could not copy loose image files: {e}")
-    
-    if total_image_count == 0:
-        print("ℹ No images found")
+    """Copy every referenced local image while preserving its relative path."""
+    html_path = Path(html_file).resolve()
+    html_dir = html_path.parent
+    parser = _ImageSourceParser()
+    parser.feed(html_path.read_text(encoding='utf-8'))
+
+    copied_sources = set()
+    missing_sources = []
+    for source in parser.sources:
+        source_path = _resolve_local_image(html_path, source)
+        if source_path is None or source_path in copied_sources:
+            continue
+        if not source_path.is_file():
+            missing_sources.append(source)
+            continue
+
+        try:
+            relative_path = source_path.relative_to(html_dir)
+        except ValueError as exc:
+            raise ValueError(
+                f"Local image must be inside the HTML directory: {source}"
+            ) from exc
+
+        target_path = Path(temp_dir) / relative_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        copied_sources.add(source_path)
+
+    if missing_sources:
+        formatted = '\n'.join(f"  - {source}" for source in sorted(set(missing_sources)))
+        raise FileNotFoundError(
+            f"HTML references local images that do not exist:\n{formatted}"
+        )
+
+    image_count = len(copied_sources)
+    if image_count:
+        print(f"✓ Copied {image_count} referenced images")
     else:
-        print(f"✓ Total images copied: {total_image_count}")
-    
-    return total_image_count
+        print("ℹ No local images referenced by HTML")
+    return image_count
 
 def get_output_format(output_file):
     """Determine output format from file extension"""
@@ -326,39 +354,6 @@ def main():
             print("\n" + "="*50)
             print(f"✅ Conversion completed successfully!")
             print(f"📁 File: {final_output}")
-            
-            # Copy images directory to the final output directory if they exist in temp
-            image_count = 0
-            if os.path.exists(temp_dir):
-                output_dir = os.path.dirname(final_output)
-                images_dirs = ['images', 'media', 'image', 'pics']
-                
-                for img_dir_name in images_dirs:
-                    temp_img_dir = os.path.join(temp_dir, img_dir_name)
-                    if os.path.exists(temp_img_dir):
-                        target_img_dir = os.path.join(output_dir, img_dir_name)
-                        try:
-                            if os.path.exists(target_img_dir):
-                                shutil.rmtree(target_img_dir)
-                            shutil.copytree(temp_img_dir, target_img_dir)
-                            img_count = len([f for f in os.listdir(target_img_dir) 
-                                           if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp'))])
-                            print(f"✓ Copied {img_count} images from {img_dir_name}/ directory to output location")
-                            image_count += img_count
-                        except Exception as e:
-                            print(f"Warning: Could not copy {img_dir_name}/ to output: {e}")
-                
-                # Also copy loose image files
-                try:
-                    for file in os.listdir(temp_dir):
-                        if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp')):
-                            src_file = os.path.join(temp_dir, file)
-                            dst_file = os.path.join(output_dir, file)
-                            shutil.copy2(src_file, dst_file)
-                            image_count += 1
-                            print(f"✓ Copied loose image file: {file}")
-                except Exception as e:
-                    print(f"Warning: Could not copy loose images to output: {e}")
             
             if os.path.exists(final_output):
                 file_size = os.path.getsize(final_output)

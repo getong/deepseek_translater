@@ -8,7 +8,9 @@ import os
 import sys
 import subprocess
 import argparse
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 def log_info(message):
     """Log info message"""
@@ -25,6 +27,52 @@ def log_error(message):
 def log_warning(message):
     """Log warning message"""
     print(f"[WARNING] {message}")
+
+
+class _ImageSourceParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.sources = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != 'img':
+            return
+        attributes = dict(attrs)
+        if attributes.get('src'):
+            self.sources.append(attributes['src'])
+
+
+def _local_html_dependencies(html_file):
+    """Return the HTML file and all existing local images it references."""
+    html_path = Path(html_file).resolve()
+    dependencies = [html_path]
+    parser = _ImageSourceParser()
+    parser.feed(html_path.read_text(encoding='utf-8'))
+
+    for source in parser.sources:
+        parsed = urlsplit(source)
+        if parsed.scheme in {'http', 'https', 'data'} or parsed.netloc:
+            continue
+        if parsed.scheme == 'file':
+            image_path = Path(unquote(parsed.path))
+        elif not parsed.scheme:
+            image_path = html_path.parent / unquote(parsed.path)
+        else:
+            continue
+        dependencies.append(image_path)
+    return dependencies
+
+
+def output_is_current(output_file, html_file):
+    """Only reuse an output when neither the HTML nor an image is newer."""
+    output_path = Path(output_file)
+    if not output_path.is_file():
+        return False
+    output_mtime = output_path.stat().st_mtime
+    return all(
+        dependency.is_file() and dependency.stat().st_mtime <= output_mtime
+        for dependency in _local_html_dependencies(html_file)
+    )
 
 def extract_title_from_markers(text):
     """Extract title content between START and END markers"""
@@ -157,12 +205,14 @@ def generate_docx_with_script(html_file, temp_dir, metadata=None):
     # Create output filename in temp directory - use book.docx as requested
     docx_file = os.path.join(temp_dir, "book.docx")
     
-    # Skip if DOCX already exists
-    if os.path.exists(docx_file):
+    # Skip only when the HTML and every referenced image are unchanged.
+    if output_is_current(docx_file, html_file):
         log_info(f"Skipping DOCX generation - file already exists: {docx_file}")
         file_size = os.path.getsize(docx_file)
         log_success(f"Found existing DOCX: {docx_file} ({file_size} bytes)")
         return docx_file
+    if os.path.exists(docx_file):
+        log_info("Regenerating DOCX because the HTML or an image is newer")
     
     log_info("Generating DOCX file using calibre_html_publish.py...")
     
@@ -201,12 +251,14 @@ def generate_epub_with_script(html_file, temp_dir, metadata=None):
     # Create output filename in temp directory - use book.epub as requested
     epub_file = os.path.join(temp_dir, "book.epub")
     
-    # Skip if EPUB already exists
-    if os.path.exists(epub_file):
+    # Skip only when the HTML and every referenced image are unchanged.
+    if output_is_current(epub_file, html_file):
         log_info(f"Skipping EPUB generation - file already exists: {epub_file}")
         file_size = os.path.getsize(epub_file)
         log_success(f"Found existing EPUB: {epub_file} ({file_size} bytes)")
         return epub_file
+    if os.path.exists(epub_file):
+        log_info("Regenerating EPUB because the HTML or an image is newer")
     
     log_info("Generating EPUB file using calibre_html_publish.py...")
     
@@ -245,12 +297,14 @@ def generate_pdf_with_script(html_file, temp_dir, metadata=None):
     # Create output filename in temp directory - use book.pdf as requested
     pdf_file = os.path.join(temp_dir, "book.pdf")
     
-    # Skip if PDF already exists
-    if os.path.exists(pdf_file):
+    # Skip only when the HTML and every referenced image are unchanged.
+    if output_is_current(pdf_file, html_file):
         log_info(f"Skipping PDF generation - file already exists: {pdf_file}")
         file_size = os.path.getsize(pdf_file)
         log_success(f"Found existing PDF: {pdf_file} ({file_size} bytes)")
         return pdf_file
+    if os.path.exists(pdf_file):
+        log_info("Regenerating PDF because the HTML or an image is newer")
     
     log_info("Generating PDF file using calibre_html_publish.py...")
     

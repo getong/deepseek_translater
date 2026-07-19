@@ -31,6 +31,25 @@ def natural_sort_key(text):
     """Natural sorting key for filenames with numbers"""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', text)]
 
+
+def merged_output_is_current(temp_dir, output_file):
+    """Return whether output.md contains the complete, latest translation set."""
+    if not os.path.isfile(output_file):
+        return False
+
+    original_files = glob.glob(os.path.join(temp_dir, 'page*.md'))
+    expected_outputs = {
+        f"output_{os.path.basename(path)}" for path in original_files
+    }
+    output_files = glob.glob(os.path.join(temp_dir, 'output_page*.md'))
+    actual_outputs = {os.path.basename(path) for path in output_files}
+    if not expected_outputs or actual_outputs != expected_outputs:
+        return False
+
+    merged_mtime = os.path.getmtime(output_file)
+    return all(os.path.getmtime(path) <= merged_mtime for path in output_files)
+
+
 def merge_markdown_files(temp_dir):
     """Merge all translated markdown files"""
     print("Merging translated markdown files...")
@@ -180,16 +199,18 @@ def main():
     # Load configuration
     config = load_config(temp_dir)
     
-    # Check if output.md already exists - skip if it does
+    # Reuse output.md only when every translated chunk is present and older.
     output_md = os.path.join(temp_dir, 'output.md')
-    if os.path.exists(output_md):
-        print(f"✓ Skipping merge - output.md already exists")
+    if merged_output_is_current(temp_dir, output_md):
+        print(f"✓ Skipping merge - output.md is up to date")
         print(f"  Found existing output.md: {output_md}")
         file_size = os.path.getsize(output_md)
         print(f"  File size: {file_size:,} bytes")
         print("\n=== Step 4 Complete ===")
         print("Next step: Run 05_md_to_html.py")
         return
+    if os.path.exists(output_md):
+        print("Regenerating output.md because translated chunks changed")
     
     # Merge markdown files
     merge_markdown_files(temp_dir)

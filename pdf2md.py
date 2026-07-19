@@ -7,13 +7,19 @@ pdf2md.py - 快速将 PDF 转换为 Markdown，保持链接和标题级别
 import sys
 import os
 import re
+import io
 from collections import defaultdict
+from pathlib import Path
 
 try:
     import fitz  # PyMuPDF
 except ImportError:
     print("请先安装 PyMuPDF: pip install PyMuPDF")
     sys.exit(1)
+
+
+PDF_TEXT_FLAGS = fitz.TEXTFLAGS_DICT | fitz.TEXT_PRESERVE_WHITESPACE
+PDF_IMAGE_CACHE_MARKER = ".pdf_images_v1"
 
 
 def extract_links_from_page(page):
@@ -31,7 +37,7 @@ def analyze_font_sizes(doc):
     font_sizes = defaultdict(int)
     
     for page in doc:
-        blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
+        blocks = page.get_text("dict", flags=PDF_TEXT_FLAGS)["blocks"]
         for block in blocks:
             if block["type"] != 0:
                 continue
@@ -66,14 +72,78 @@ def analyze_font_sizes(doc):
     return body_size, heading_map
 
 
-def get_text_with_links_and_headings(page, page_links, body_size, heading_map):
-    """提取页面文本，嵌入链接并识别标题"""
-    blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
+def save_image_block(block, images_dir, page_num, image_num):
+    """将 PyMuPDF 图片块保存为 HTML/PDF 转换器普遍支持的格式。"""
+    image_data = block.get("image")
+    if not image_data:
+        raise ValueError("图片块不包含图像数据")
+
+    source_ext = block.get("ext", "").lower()
+    images_dir = Path(images_dir)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    filename_base = f"image_p{page_num:04d}_{image_num}"
+
+    # PyMuPDF may return JPEG 2000 (jpx). Browsers do not reliably render it,
+    # even when it is renamed to .jpg, so transcode unsupported formats.
+    if source_ext == "png":
+        filename = f"{filename_base}.png"
+        (images_dir / filename).write_bytes(image_data)
+    elif source_ext in {"jpg", "jpeg"}:
+        filename = f"{filename_base}.jpg"
+        (images_dir / filename).write_bytes(image_data)
+    else:
+        try:
+            from PIL import Image
+
+            with Image.open(io.BytesIO(image_data)) as image:
+                has_alpha = image.mode in {"RGBA", "LA"} or "transparency" in image.info
+                if has_alpha:
+                    filename = f"{filename_base}.png"
+                    image.save(images_dir / filename, format="PNG", optimize=True)
+                else:
+                    filename = f"{filename_base}.jpg"
+                    if image.mode not in {"RGB", "L"}:
+                        image = image.convert("RGB")
+                    image.save(
+                        images_dir / filename,
+                        format="JPEG",
+                        quality=92,
+                        optimize=True,
+                    )
+        except Exception as exc:
+            raise ValueError(
+                f"无法转换第 {page_num + 1} 页的第 {image_num + 1} 张图片"
+            ) from exc
+
+    return (Path("images") / filename).as_posix()
+
+
+def get_text_with_links_and_headings(
+    page,
+    page_links,
+    body_size,
+    heading_map,
+    images_dir=None,
+    page_num=0,
+):
+    """提取页面文本和图片，嵌入链接并识别标题。"""
+    # PDF content streams are not necessarily in visual order. Sorting keeps a
+    # figure between its introducing paragraph and caption instead of moving it
+    # into a later translation chunk.
+    blocks = page.get_text("dict", flags=PDF_TEXT_FLAGS, sort=True)["blocks"]
     
     result_lines = []
     
+    image_num = 0
     for block in blocks:
-        if block["type"] != 0:  # 跳过图片块
+        if block["type"] == 1:
+            if images_dir is not None:
+                image_path = save_image_block(block, images_dir, page_num, image_num)
+                result_lines.append(f"![]({image_path})")
+                image_num += 1
+            continue
+
+        if block["type"] != 0:
             continue
             
         for line in block.get("lines", []):
@@ -142,40 +212,45 @@ def pdf_to_markdown(pdf_path, output_path=None):
     print(f"正在转换: {pdf_path}")
     print(f"输出文件: {output_path}")
     
+    output_path = os.path.abspath(output_path)
+    images_dir = Path(output_path).parent / "images"
     doc = fitz.open(pdf_path)
-    total_pages = len(doc)
-    print(f"总页数: {total_pages}")
-    
-    # 第一遍：分析字体大小分布
-    print("分析文档结构...")
-    body_size, heading_map = analyze_font_sizes(doc)
-    print(f"  正文字体大小: {body_size}")
-    if heading_map:
-        print(f"  检测到标题级别: {len(heading_map)} 种")
-        for size, level in sorted(heading_map.items(), reverse=True):
-            print(f"    H{level}: {size}pt")
-    
-    all_content = []
-    
-    # 第二遍：提取内容
-    print("提取内容...")
-    for page_num in range(total_pages):
-        page = doc[page_num]
-        
-        # 获取页面链接
-        page_links = extract_links_from_page(page)
-        
-        # 提取带链接和标题的文本
-        page_content = get_text_with_links_and_headings(page, page_links, body_size, heading_map)
-        
-        if page_content.strip():
-            all_content.append(page_content)
-        
-        # 进度显示
-        if (page_num + 1) % 10 == 0 or page_num == total_pages - 1:
-            print(f"  处理进度: {page_num + 1}/{total_pages}")
-    
-    doc.close()
+    try:
+        total_pages = len(doc)
+        print(f"总页数: {total_pages}")
+
+        # 第一遍：分析字体大小分布
+        print("分析文档结构...")
+        body_size, heading_map = analyze_font_sizes(doc)
+        print(f"  正文字体大小: {body_size}")
+        if heading_map:
+            print(f"  检测到标题级别: {len(heading_map)} 种")
+            for size, level in sorted(heading_map.items(), reverse=True):
+                print(f"    H{level}: {size}pt")
+
+        all_content = []
+
+        # 第二遍：按页面内容顺序提取文本和图片
+        print("提取内容和图片...")
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            page_links = extract_links_from_page(page)
+            page_content = get_text_with_links_and_headings(
+                page,
+                page_links,
+                body_size,
+                heading_map,
+                images_dir=images_dir,
+                page_num=page_num,
+            )
+
+            if page_content.strip():
+                all_content.append(page_content)
+
+            if (page_num + 1) % 10 == 0 or page_num == total_pages - 1:
+                print(f"  处理进度: {page_num + 1}/{total_pages}")
+    finally:
+        doc.close()
     
     # 合并内容
     markdown_content = "\n\n".join(all_content)
@@ -186,9 +261,16 @@ def pdf_to_markdown(pdf_path, output_path=None):
     # 写入文件
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(markdown_content)
+
+    (Path(output_path).parent / PDF_IMAGE_CACHE_MARKER).write_text(
+        "PDF images extracted with web-compatible encoding.\n",
+        encoding="utf-8",
+    )
     
     file_size = os.path.getsize(output_path)
     print(f"✓ 转换完成: {output_path} ({file_size:,} 字节)")
+    image_count = len(list(images_dir.glob("image_*"))) if images_dir.exists() else 0
+    print(f"✓ 提取图片: {image_count} 张 -> {images_dir}")
     
     return output_path
 
