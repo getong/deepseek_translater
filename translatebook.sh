@@ -493,7 +493,7 @@ main() {
         fi
     # Convert supported file formats using Calibre HTMLZ method
     elif [[ "${INPUT_FILE}" == *.epub ]] || [[ "${INPUT_FILE}" == *.EPUB ]] || [[ "${INPUT_FILE}" == *.pdf ]] || [[ "${INPUT_FILE}" == *.PDF ]] || [[ "${INPUT_FILE}" == *.docx ]] || [[ "${INPUT_FILE}" == *.DOCX ]]; then
-        log_info "Detected supported file format, converting via Calibre HTMLZ..."
+        log_info "Detected supported file format, generating markdown chunks..."
         
         local original_file="$INPUT_FILE"
         

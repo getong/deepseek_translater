@@ -497,16 +497,50 @@ def main():
     print(f"Target chunk size: {args.chunk_size} characters")
     print()
     
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    temp_dir = os.path.abspath(args.temp_dir or f"{base_name}_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    if file_ext == '.pdf':
+        print("=== Native PDF to Markdown ===")
+        try:
+            from pdf2md import pdf_to_markdown
+            
+            input_md = os.path.join(temp_dir, "input.md")
+            
+            if os.path.exists(input_md):
+                print(f"✓ Skipping PDF to Markdown conversion - input.md already exists")
+            else:
+                pdf_to_markdown(input_file, input_md)
+                
+            page_files = glob.glob(os.path.join(temp_dir, 'page*.md'))
+            if page_files:
+                chunk_count = len([f for f in page_files if not os.path.basename(f).startswith('output_')])
+                print(f"✓ Skipping markdown splitting - found {chunk_count} existing page files")
+            else:
+                chunk_count = split_markdown_by_size(input_md, temp_dir, args.chunk_size)
+                if chunk_count == 0:
+                    sys.exit(1)
+                    
+            create_config_file(temp_dir, input_file, args.ilang, args.olang, {})
+            
+            print("\n" + "="*50)
+            print("✓ PDF Conversion completed successfully!")
+            print(f"✓ Temp directory: {temp_dir}")
+            print(f"✓ Markdown chunks: {chunk_count} files")
+            print(f"✓ Ready for translation pipeline")
+            return
+            
+        except Exception as e:
+            print(f"Error converting PDF: {e}")
+            sys.exit(1)
+            
     # Find Calibre
     calibre_path = find_calibre_convert()
     if not calibre_path:
         print("Error: Calibre ebook-convert not found")
         print("Please install Calibre: https://calibre-ebook.com/")
         sys.exit(1)
-    
-    base_name = os.path.splitext(os.path.basename(input_file))[0]
-    temp_dir = os.path.abspath(args.temp_dir or f"{base_name}_temp")
-    os.makedirs(temp_dir, exist_ok=True)
 
     # Keep temporary conversion files with the pipeline output, not beside the source.
     htmlz_file = os.path.join(temp_dir, f".{base_name}.htmlz")

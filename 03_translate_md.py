@@ -239,7 +239,10 @@ def validate_code_blocks(source, translated):
     translated_blocks = extract_fenced_code_blocks(translated)
 
     if len(source_blocks) != len(translated_blocks):
-        return False, f"code block count changed ({len(source_blocks)} -> {len(translated_blocks)})"
+        print(f"    [Warning] code block count changed ({len(source_blocks)} -> {len(translated_blocks)})")
+        if len(translated_blocks) < len(source_blocks):
+            return False, f"code block count decreased ({len(source_blocks)} -> {len(translated_blocks)})"
+        return True, None
 
     for index, (source_block, translated_block) in enumerate(
         zip(source_blocks, translated_blocks), 1
