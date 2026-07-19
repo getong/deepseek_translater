@@ -25,6 +25,7 @@ STEP_END=7
 REINSTALL_PACKAGES=false
 OCR_MODE=false
 PYTHON_BIN=""
+TEMP_DIR=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -363,6 +364,10 @@ parse_args() {
         log_error "Start step ($STEP_START) cannot be greater than end step ($STEP_END)"
         exit 2
     fi
+
+    local input_name
+    input_name="$(basename "$INPUT_FILE")"
+    TEMP_DIR="${PWD}/${input_name%.*}_temp"
 }
 
 # Execute Python script with error handling
@@ -370,21 +375,23 @@ execute_python_script() {
     local script_name="$1"
     local step_num="$2"
     local description="$3"
+    shift 3
+    local extra_args=("$@")
     
     log_step "$step_num" "$description"
     
     if [[ "$DRY_RUN" == true ]]; then
-        log_info "[DRY RUN] Would execute: $PYTHON_BIN ${script_name}"
+        log_info "[DRY RUN] Would execute: $PYTHON_BIN ${script_name} ${extra_args[*]}"
         return 0
     fi
 
     if [[ "$VERBOSE" == true ]]; then
-        log_info "Executing: $PYTHON_BIN ${SCRIPT_DIR}/${script_name}"
+        log_info "Executing: $PYTHON_BIN ${SCRIPT_DIR}/${script_name} ${extra_args[*]}"
     fi
 
-    if ! "$PYTHON_BIN" "${SCRIPT_DIR}/${script_name}"; then
+    if ! "$PYTHON_BIN" "${SCRIPT_DIR}/${script_name}" "${extra_args[@]}"; then
         log_error "Step $step_num failed: $description"
-        log_error "Command: $PYTHON_BIN ${SCRIPT_DIR}/${script_name}"
+        log_error "Command: $PYTHON_BIN ${SCRIPT_DIR}/${script_name} ${extra_args[*]}"
         exit 1
     fi
     
@@ -394,11 +401,10 @@ execute_python_script() {
 # Clean temporary directory
 clean_temp_directory() {
     if [[ "$CLEAN_TEMP" == true ]]; then
-        local temp_dir="${INPUT_FILE%.*}_temp"
-        if [[ -d "$temp_dir" ]]; then
-            log_info "Cleaning temporary directory: $temp_dir"
+        if [[ -d "$TEMP_DIR" ]]; then
+            log_info "Cleaning temporary directory: $TEMP_DIR"
             if [[ "$DRY_RUN" == false ]]; then
-                rm -rf "$temp_dir"
+                rm -rf "$TEMP_DIR"
             fi
             log_success "Temporary directory cleaned"
         fi
@@ -409,6 +415,7 @@ clean_temp_directory() {
 show_config() {
     log_info "Configuration:"
     echo "  Input file: $INPUT_FILE"
+    echo "  Temp directory: $TEMP_DIR"
     echo "  Input language: $INPUT_LANG"
     echo "  Output language: $OUTPUT_LANG"
     echo "  Custom prompt: ${CUSTOM_PROMPT:-'None'}"
@@ -466,7 +473,7 @@ main() {
             fi
 
             # Convert PDF using OCR
-            local ocr_cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/01_ocr_to_md.py" "$INPUT_FILE" -l "$INPUT_LANG" --olang "$OUTPUT_LANG")
+            local ocr_cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/01_ocr_to_md.py" "$INPUT_FILE" --temp-dir "$TEMP_DIR" -l "$INPUT_LANG" --olang "$OUTPUT_LANG")
 
             if [[ "$VERBOSE" == true ]]; then
                 log_info "Executing: ${ocr_cmd[*]}"
@@ -479,7 +486,9 @@ main() {
 
             log_success "OCR conversion completed successfully"
 
-            # Skip step 1 and 2 since OCR conversion is already done
+        fi
+        # OCR conversion replaces steps 1 and 2 without overriding a later --start-step.
+        if [[ $STEP_START -lt 3 ]]; then
             STEP_START=3
         fi
     # Convert supported file formats using Calibre HTMLZ method
@@ -498,7 +507,7 @@ main() {
             fi
             
             # Convert file using new method
-            local convert_cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/01_convert_to_htmlz.py" "$original_file" -l "$INPUT_LANG" --olang "$OUTPUT_LANG")
+            local convert_cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/01_convert_to_htmlz.py" "$original_file" --temp-dir "$TEMP_DIR" -l "$INPUT_LANG" --olang "$OUTPUT_LANG")
             
             if [[ "$VERBOSE" == true ]]; then
                 log_info "Executing: ${convert_cmd[*]}"
@@ -511,8 +520,9 @@ main() {
             
             log_success "File converted to markdown chunks successfully"
             
-            # The conversion creates a temp directory with markdown files
-            # Skip step 1 and 2 since conversion is already done
+        fi
+        # HTMLZ conversion replaces steps 1 and 2 without overriding a later --start-step.
+        if [[ $STEP_START -lt 3 ]]; then
             STEP_START=3
         fi
     fi
@@ -570,8 +580,7 @@ main() {
                 if [[ "$DRY_RUN" == true ]]; then
                     log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[2]} with a custom prompt"
                 else
-                    # Use input file name to determine temp directory
-                    local base_temp_dir="${INPUT_FILE%.*}_temp"
+                    local base_temp_dir="$TEMP_DIR"
                     
                     local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[2]}" --temp-dir "$base_temp_dir" -p "$CUSTOM_PROMPT")
                     
@@ -592,10 +601,9 @@ main() {
                 log_step "6" "${step_descriptions[5]}"
                 
                 if [[ "$DRY_RUN" == true ]]; then
-                    log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[5]} with base_temp/book.html output"
+                    log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[5]} --temp-dir \"$TEMP_DIR\""
                 else
-                    # Use input file name to determine temp directory
-                    local base_temp_dir="${INPUT_FILE%.*}_temp"
+                    local base_temp_dir="$TEMP_DIR"
                     
                     if [[ ! -d "$base_temp_dir" ]]; then
                         log_error "Temp directory not found: $base_temp_dir"
@@ -603,7 +611,7 @@ main() {
                     fi
                     
                     # Step 6 will process book.html in the temp directory directly
-                    local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[5]}")
+                    local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[5]}" --temp-dir "$base_temp_dir")
                     
                     if [[ "$VERBOSE" == true ]]; then
                         log_info "Executing: ${cmd[*]}"
@@ -622,10 +630,9 @@ main() {
                     log_step "3" "${step_descriptions[2]}"
                     
                     if [[ "$DRY_RUN" == true ]]; then
-                        log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[2]}"
+                        log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[2]} --temp-dir \"$TEMP_DIR\""
                     else
-                        # Use input file name to determine temp directory
-                        local base_temp_dir="${INPUT_FILE%.*}_temp"
+                        local base_temp_dir="$TEMP_DIR"
                         
                         local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[2]}" --temp-dir "$base_temp_dir")
                         
@@ -645,11 +652,10 @@ main() {
                     log_step "4" "${step_descriptions[3]}"
                     
                     if [[ "$DRY_RUN" == true ]]; then
-                        local base_temp_dir="${INPUT_FILE%.*}_temp"
+                        local base_temp_dir="$TEMP_DIR"
                         log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[3]} --temp-dir \"$base_temp_dir\""
                     else
-                        # Use input file name to determine temp directory
-                        local base_temp_dir="${INPUT_FILE%.*}_temp"
+                        local base_temp_dir="$TEMP_DIR"
                         
                         local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[3]}" --temp-dir "$base_temp_dir")
                         
@@ -669,11 +675,10 @@ main() {
                     log_step "5" "${step_descriptions[4]}"
                     
                     if [[ "$DRY_RUN" == true ]]; then
-                        local base_temp_dir="${INPUT_FILE%.*}_temp"
+                        local base_temp_dir="$TEMP_DIR"
                         log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[4]} --temp-dir \"$base_temp_dir\""
                     else
-                        # Use input file name to determine temp directory
-                        local base_temp_dir="${INPUT_FILE%.*}_temp"
+                        local base_temp_dir="$TEMP_DIR"
                         
                         local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[4]}" --temp-dir "$base_temp_dir")
                         
@@ -688,6 +693,8 @@ main() {
                         
                         log_success "Step 5 completed: ${step_descriptions[4]}"
                     fi
+                elif [[ $i -eq 7 ]]; then
+                    execute_python_script "${step_scripts[6]}" "7" "${step_descriptions[6]}" --temp-dir "$TEMP_DIR"
                 else
                     execute_python_script "${step_scripts[$((i-1))]}" "$i" "${step_descriptions[$((i-1))]}"
                 fi
@@ -708,7 +715,7 @@ main() {
     if [[ "$DRY_RUN" == false ]]; then
         echo -e "${GREEN}✓ Input file:${NC} $INPUT_FILE"
         echo -e "${GREEN}✓ Execution time:${NC} ${duration}s"
-        echo -e "${GREEN}✓ Files generated in temp directory:${NC} ${INPUT_FILE%.*}_temp/"
+        echo -e "${GREEN}✓ Files generated in temp directory:${NC} ${TEMP_DIR}/"
     else
         echo -e "${YELLOW}Note: This was a dry run. No files were modified.${NC}"
     fi

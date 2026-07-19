@@ -20,6 +20,9 @@ except ImportError:
 
 def load_config(temp_dir):
     """Load configuration from step 1"""
+    if not temp_dir:
+        print("Warning: temp directory not found. Using default settings.")
+        return {'output_file': 'output.html'}
     config_file = os.path.join(temp_dir, 'config.txt')
     if not config_file or not os.path.exists(config_file):
         # Try to find config in current directory temp folders
@@ -395,33 +398,37 @@ def main():
     """Main function"""
     parser = argparse.ArgumentParser(description='Generate and insert TOC into HTML')
     parser.add_argument('-o', '--output', help='Output HTML file path (default: use config or auto-detect)')
+    parser.add_argument('--temp-dir', help='Specify temp directory to use')
     
     args = parser.parse_args()
     
     print("=== Book Translation Tool - Step 6: Add Table of Contents ===")
     
-    # Try to find temp directory - use the correct logic to find the right temp directory
-    temp_dir = None
-    config_files = []
-    
-    # Check for config.txt files in temp directories
-    import glob
-    temp_dirs = glob.glob("*_temp")
-    for temp_dir_candidate in temp_dirs:
-        config_file = os.path.join(temp_dir_candidate, "config.txt")
-        if os.path.exists(config_file):
-            config_files.append((config_file, temp_dir_candidate))
-    
-    if config_files:
-        # Use the most recent config file's directory
-        _, temp_dir = max(config_files, key=lambda x: os.path.getmtime(x[0]))
-        print(f"Using temp directory from config location: {temp_dir}")
+    if args.temp_dir:
+        temp_dir = args.temp_dir
+        if not os.path.isdir(temp_dir):
+            print(f"Error: Specified temp directory does not exist: {temp_dir}")
+            sys.exit(1)
+        print(f"Using specified temp directory: {temp_dir}")
     else:
-        print("Warning: No temp directory with config.txt found")
-        # Fall back to finding any temp directory
-        if temp_dirs:
-            temp_dir = temp_dirs[0]  # Use first found, not by modification time
+        # Backward-compatible auto-discovery for direct script use.
+        import glob
+        temp_dirs = glob.glob("*_temp")
+        config_files = []
+        for temp_dir_candidate in temp_dirs:
+            config_file = os.path.join(temp_dir_candidate, "config.txt")
+            if os.path.exists(config_file):
+                config_files.append((config_file, temp_dir_candidate))
+
+        temp_dir = None
+        if config_files:
+            _, temp_dir = max(config_files, key=lambda x: os.path.getmtime(x[0]))
+            print(f"Using temp directory from config location: {temp_dir}")
+        elif temp_dirs:
+            temp_dir = temp_dirs[0]
             print(f"Using fallback temp directory: {temp_dir}")
+        else:
+            print("Warning: No temp directory with config.txt found")
     
     # Load configuration
     config = load_config(temp_dir)

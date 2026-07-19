@@ -7,6 +7,7 @@ Uses existing html2docx.sh and html2epub.sh scripts to generate files in temp di
 import os
 import sys
 import subprocess
+import argparse
 from pathlib import Path
 
 def log_info(message):
@@ -111,23 +112,27 @@ Title: {title}"""
         log_warning(f"Error translating title: {e}, using original")
         return title
 
-def load_config():
+def load_config(temp_dir=None):
     """Load configuration from temp directory"""
-    # Look for config files in temp directories - use the same logic as main
-    config_files = []
+    if temp_dir:
+        config_files = [os.path.join(temp_dir, "config.txt")]
+    else:
+        # Look for config files in temp directories - use the same logic as main
+        config_files = []
     
-    # Check for config.txt files in temp directories
-    import glob
-    temp_dirs = glob.glob("*_temp")
-    for temp_dir in temp_dirs:
-        config_file = os.path.join(temp_dir, "config.txt")
-        if os.path.exists(config_file):
-            config_files.append(config_file)
+        # Check for config.txt files in temp directories
+        import glob
+        temp_dirs = glob.glob("*_temp")
+        for discovered_temp_dir in temp_dirs:
+            config_file = os.path.join(discovered_temp_dir, "config.txt")
+            if os.path.exists(config_file):
+                config_files.append(config_file)
+
+        # Also check current directory as fallback
+        if os.path.exists("config.txt"):
+            config_files.append("config.txt")
     
-    # Also check current directory as fallback
-    if os.path.exists("config.txt"):
-        config_files.append("config.txt")
-    
+    config_files = [path for path in config_files if os.path.exists(path)]
     if not config_files:
         return None
     
@@ -281,16 +286,20 @@ def generate_pdf_with_script(html_file, temp_dir, metadata=None):
 
 def main():
     """Main function"""
+    parser = argparse.ArgumentParser(description="Generate DOCX, EPUB, and PDF files")
+    parser.add_argument('--temp-dir', help='Specify temp directory to use')
+    args = parser.parse_args()
+
     log_info("Starting Step 7: Generate DOCX, EPUB, and PDF files")
     
     # Load configuration
-    config = load_config()
+    config = load_config(args.temp_dir)
     if not config:
         log_error("Could not find configuration file. Please ensure step 1 completed successfully.")
         sys.exit(1)
     
     # Get temp directory
-    temp_dir = config.get('temp_dir')
+    temp_dir = args.temp_dir or config.get('temp_dir')
     output_lang = config.get('output_lang', 'zh')
     
     # If temp_dir not specified in config, try to determine from config file location

@@ -12,6 +12,10 @@ import shutil
 import tempfile
 import argparse
 import glob
+import re
+
+MARKDOWN_FORMAT_MARKER = ".markdown_format_v2"
+CALIBRE_CODE_PARAGRAPH_CLASSES = {"calibre26", "calibre33"}
 
 def find_calibre_convert():
     """Find ebook-convert command from Calibre installation"""
@@ -181,12 +185,12 @@ def extract_htmlz(htmlz_file, temp_dir):
         print(f"✗ Error extracting HTMLZ: {e}")
         return None, None
 
-def setup_temp_directory(input_file, html_file, images_dir):
+def setup_temp_directory(input_file, html_file, images_dir, temp_dir=None):
     """Setup temp directory with HTML and images"""
     try:
         # Create temp directory based on input filename
         base_name = os.path.splitext(os.path.basename(input_file))[0]
-        temp_dir = f"{base_name}_temp"
+        temp_dir = temp_dir or f"{base_name}_temp"
         
         # Create temp directory if it doesn't exist (don't remove existing files)
         os.makedirs(temp_dir, exist_ok=True)
@@ -215,6 +219,52 @@ def setup_temp_directory(input_file, html_file, images_dir):
         print(f"✗ Error setting up temp directory: {e}")
         return None
 
+def prepare_html_for_markdown(html_file):
+    """Convert Calibre code paragraphs into semantic HTML code blocks."""
+    from bs4 import BeautifulSoup
+
+    with open(html_file, 'r', encoding='utf-8') as f:
+        soup = BeautifulSoup(f.read(), 'html.parser')
+
+    def is_code_paragraph(tag):
+        return (
+            tag is not None
+            and tag.name == 'p'
+            and CALIBRE_CODE_PARAGRAPH_CLASSES.intersection(tag.get('class', []))
+        )
+
+    code_block_count = 0
+    for paragraph in list(soup.find_all('p')):
+        if paragraph.parent is None or not is_code_paragraph(paragraph):
+            continue
+        if is_code_paragraph(paragraph.find_previous_sibling()):
+            continue
+
+        group = []
+        current = paragraph
+        while is_code_paragraph(current):
+            group.append(current)
+            current = current.find_next_sibling()
+
+        lines = [item.get_text().replace('\u00a0', ' ').strip() for item in group]
+        pre = soup.new_tag('pre')
+        code = soup.new_tag('code', attrs={'class': 'language-text'})
+        code.string = '\n'.join(lines)
+        pre.append(code)
+        group[0].replace_with(pre)
+        for item in group[1:]:
+            item.extract()
+        code_block_count += 1
+
+    fd, normalized_path = tempfile.mkstemp(suffix='.html', prefix='normalized_')
+    os.close(fd)
+    with open(normalized_path, 'w', encoding='utf-8') as f:
+        f.write(str(soup))
+
+    print(f"✓ Normalized {code_block_count} Calibre code blocks")
+    return normalized_path
+
+
 def convert_html_to_markdown(html_file, md_file):
     """Convert HTML to Markdown using pandoc"""
     try:
@@ -222,13 +272,19 @@ def convert_html_to_markdown(html_file, md_file):
         
         print(f"Converting HTML to Markdown...")
         
-        # Convert HTML to Markdown
-        pypandoc.convert_file(
-            html_file,
-            'markdown',
-            outputfile=md_file,
-            extra_args=['--wrap=none']  # Don't wrap lines
-        )
+        normalized_html = prepare_html_for_markdown(html_file)
+        try:
+            # Disable native spans so Calibre styling does not become [text]{.class}.
+            pypandoc.convert_file(
+                normalized_html,
+                'markdown',
+                format='html-native_spans',
+                outputfile=md_file,
+                extra_args=['--wrap=none']
+            )
+        finally:
+            if os.path.exists(normalized_html):
+                os.remove(normalized_html)
         
         if os.path.exists(md_file):
             with open(md_file, 'r', encoding='utf-8') as f:
@@ -243,6 +299,10 @@ def convert_html_to_markdown(html_file, md_file):
             
             with open(md_file, 'w', encoding='utf-8') as f:
                 f.write(content)
+
+            marker_file = os.path.join(os.path.dirname(md_file), MARKDOWN_FORMAT_MARKER)
+            with open(marker_file, 'w', encoding='utf-8') as f:
+                f.write('2\n')
             
             print(f"✓ Markdown conversion successful: {md_file}")
             return True
@@ -314,18 +374,41 @@ def split_markdown_by_size(md_file, temp_dir, target_size=6000):
         chunks = []
         current_chunk = []
         current_size = 0
+        fence_char = None
+        fence_length = 0
         
         for line in lines:
             line_size = len(line) + 1  # +1 for newline
-            
-            # If adding this line would exceed target size and we have content
-            if current_size + line_size > target_size and current_chunk:
+
+            stripped = line.lstrip()
+            opening_match = None
+            is_closing_fence = False
+            if fence_char is None:
+                opening_match = re.match(r'^(`{3,}|~{3,})', stripped)
+            else:
+                closing_pattern = rf'^{re.escape(fence_char)}{{{fence_length},}}[ \t]*$'
+                is_closing_fence = bool(re.match(closing_pattern, stripped))
+
+            # Split before normal text or a new code block, never inside a code block.
+            if (
+                current_size + line_size > target_size
+                and current_chunk
+                and fence_char is None
+            ):
                 chunks.append('\n'.join(current_chunk))
                 current_chunk = [line]
                 current_size = line_size
             else:
                 current_chunk.append(line)
                 current_size += line_size
+
+            if opening_match:
+                fence = opening_match.group(1)
+                fence_char = fence[0]
+                fence_length = len(fence)
+            elif is_closing_fence:
+                fence_char = None
+                fence_length = 0
         
         # Add the last chunk
         if current_chunk:
@@ -388,6 +471,7 @@ def main():
     """Main conversion function"""
     parser = argparse.ArgumentParser(description="Convert PDF/DOCX/EPUB to markdown chunks via HTMLZ")
     parser.add_argument("input_file", help="Input file (PDF, DOCX, or EPUB)")
+    parser.add_argument("--temp-dir", help="Output temp directory (default: current directory/input-name_temp)")
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
     parser.add_argument("--chunk-size", type=int, default=6000, help="Target chunk size in characters (default: 6000)")
@@ -420,13 +504,15 @@ def main():
         print("Please install Calibre: https://calibre-ebook.com/")
         sys.exit(1)
     
-    # Create temporary HTMLZ file
-    htmlz_file = f"{os.path.splitext(input_file)[0]}.htmlz"
-    
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    temp_dir = os.path.abspath(args.temp_dir or f"{base_name}_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # Keep temporary conversion files with the pipeline output, not beside the source.
+    htmlz_file = os.path.join(temp_dir, f".{base_name}.htmlz")
+
     try:
         # Check if input.html already exists in temp directory - skip entire conversion if it does
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
-        temp_dir = f"{base_name}_temp"
         input_html_path = os.path.join(temp_dir, "input.html")
         
         if os.path.exists(input_html_path):
@@ -456,6 +542,16 @@ def main():
                 except Exception as e:
                     print(f"⚠️ Could not read metadata from config: {e}")
             
+            marker_file = os.path.join(temp_dir, MARKDOWN_FORMAT_MARKER)
+            translated_pages = glob.glob(os.path.join(temp_dir, 'output_page*.md'))
+            if not os.path.exists(marker_file) and not translated_pages:
+                print("Refreshing cached Markdown to preserve source code formatting...")
+                input_md = os.path.join(temp_dir, "input.md")
+                if os.path.exists(input_md):
+                    os.remove(input_md)
+                for page_file in glob.glob(os.path.join(temp_dir, 'page*.md')):
+                    os.remove(page_file)
+
             # Still need to check/create config and handle markdown splitting
             # Step 4: Convert HTML to Markdown (skip if input.md already exists)
             input_md = os.path.join(temp_dir, "input.md")
@@ -500,7 +596,7 @@ def main():
             metadata = extract_metadata_from_htmlz(extract_dir)
             
             # Step 3: Setup temp directory
-            temp_dir = setup_temp_directory(input_file, html_file, images_dir)
+            temp_dir = setup_temp_directory(input_file, html_file, images_dir, temp_dir)
             if not temp_dir:
                 sys.exit(1)
             

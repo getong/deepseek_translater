@@ -161,6 +161,7 @@ def main():
         description="Convert scanned PDF to markdown using OCR API"
     )
     parser.add_argument("input_file", help="Input PDF file (scanned/OCR type)")
+    parser.add_argument("--temp-dir", help="Output temp directory (default: current directory/input-name_temp)")
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
 
@@ -186,7 +187,7 @@ def main():
 
     # Create temp directory
     base_name = os.path.splitext(os.path.basename(input_file))[0]
-    temp_dir = f"{base_name}_temp"
+    temp_dir = args.temp_dir or f"{base_name}_temp"
     os.makedirs(temp_dir, exist_ok=True)
 
     # Create images subdirectory for PDF page images

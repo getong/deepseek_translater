@@ -66,10 +66,13 @@ printf 'DEEPSEEK_API_KEY=your_api_key_here\n' > .env
 ./translatebook.sh book.pdf
 ./translatebook.sh document.docx  
 ./translatebook.sh ebook.epub
+
+# 输入文件可以位于任意目录
+./translatebook.sh ~/books/Flutter.Engineering.2024.epub
 ```
 
 ### 3. 获取结果
-翻译完成后，结果位于输入文件对应的 `{文件名}_temp/` 目录。例如 `book.pdf` 的结果目录是 `book_temp/`，其中包含 `book.html`、`book.docx`、`book.epub` 和 `book.pdf`。
+翻译结果始终写入执行命令时的当前目录，目录名为 `{文件名}_temp/`。例如在项目目录执行 `./translatebook.sh ~/books/book.epub`，结果位于项目目录的 `book_temp/`，其中包含 `book.html`、`book.docx`、`book.epub` 和 `book.pdf`；不会在源文件目录旁创建 temp 目录。
 
 ## 功能特点
 
@@ -86,6 +89,7 @@ printf 'DEEPSEEK_API_KEY=your_api_key_here\n' > .env
 - **7步流程**: 转换 → 翻译 → 合并 → HTML → 目录 → 格式转换
 - **跳过优化**: 新架构下自动跳过步骤1-2，直接进入翻译
 - **目录精确**: 每个步骤使用正确的temp目录，支持多项目并行
+- **代码保护**: Calibre代码段转换为 fenced code block；翻译时只允许修改代码注释，非注释代码发生变化会自动拒绝并重试
 
 ### 新转换引擎 (01_convert_to_htmlz.py)
 - **Calibre集成**: 使用 `ebook-convert` 命令行工具
@@ -133,6 +137,9 @@ venv/bin/python -m pip install python-pptx
 ./translatebook.sh book.pdf
 ./translatebook.sh document.docx  
 ./translatebook.sh ebook.epub
+
+# 翻译项目目录之外的文件，结果仍保存在当前目录
+./translatebook.sh ~/delete-videos/flutter-movies-docs/flutter-doc/Flutter.Engineering.2024.epub
 
 # 指定目标语言翻译
 ./translatebook.sh --olang en book.pdf
@@ -248,9 +255,9 @@ page0001.md ~ page0042.md → DeepSeek翻译 → 合并 → HTML → 目录 → 
 
 ### 01_convert_to_htmlz.py 参数
 - `--chunk-size`: 分块大小（默认6000字符）
+- `--temp-dir`: 指定临时输出目录
 - `-l, --ilang`: 输入语言
 - `--olang`: 输出语言
-- `-o, --output`: 输出文件名
 
 ## 🔧 故障排除
 
@@ -267,6 +274,9 @@ page0001.md ~ page0042.md → DeepSeek翻译 → 合并 → HTML → 目录 → 
 | 权限问题 | 确保脚本有执行权限：`chmod +x translatebook.sh` |
 | temp目录错误 | v2.1已修复，确保使用最新版本 |
 | 多项目冲突 | 每个项目都会创建独立的`{filename}_temp`目录 |
+| C/C++代码出现 `[UFUNCTION]`、`[void]` | 旧缓存由 Pandoc span 语法产生；使用 `--clean` 重新转换并翻译 |
+
+`--clean` 会删除对应 temp 目录中的已有翻译结果，并重新调用翻译 API。尚未生成任何 `output_page*.md` 的旧转换缓存会自动升级，无需手动清理。
 
 ### 调试建议
 ```bash

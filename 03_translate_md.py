@@ -9,6 +9,7 @@ import sys
 import glob
 import time
 import argparse
+import re
 
 from deepseek_client import translate as ds_translate, check_api
 
@@ -68,11 +69,12 @@ IMPORTANT REQUIREMENTS:
     - 然后是翻译后的markdown内容
     - 最后一行必须是：<!-- END -->
     - 不要在这些标记之前或之后添加任何说明、警告、代码块标记或其他内容
-    - 绝对不要输出任何markdown代码块标记（如```markdown或```）
+    - 不要在正文外额外包裹markdown代码块；原文已有的代码围栏必须原样保留
     - 不要输出任何解释性文字或元数据
     - 不要输出"我来帮您翻译"、"以下是翻译结果"等开场白
     - 不要输出任何关于翻译质量、注意事项的说明
-    - 严格按照：<!-- START -->[翻译内容]<!-- END --> 的格式输出
+    - 严格按照三行格式输出：<!-- START -->、翻译内容、<!-- END -->
+    - “翻译内容”前后不要添加方括号、圆括号、引号或其他包装符号
     - 如果输出不符合此格式，系统将重新请求翻译
 8.  表达清晰简洁，不要使用复杂的句式。请严格按顺序翻译，不要跳过任何内容。
 9.  必须保留所有图片引用，包括：
@@ -101,7 +103,13 @@ IMPORTANT REQUIREMENTS:
 13. 注意事项：
     - 不要过度添加标题标记，只对真正的标题文本添加
     - 正文段落不要添加标题标记
-    - 如果原文已有markdown标题标记，保持其层级结构"""
+    - 如果原文已有markdown标题标记，保持其层级结构
+14. 严格保护代码：
+    - fenced code block中的代码、宏、标识符、字符串、缩进、换行和标点必须逐字符保持不变
+    - 代码块内只翻译自然语言注释，即 // 后或 /* ... */ 内的注释文字
+    - 不要给代码 token 添加 []、()、引号、反引号或任何其他包装符号
+    - 行内代码、API名称、类型名、函数名、文件路径和命令必须原样保留
+    - 不要添加、删除或移动代码围栏"""
     if custom_prompt:
         base_prompt += f"\n\nADDITIONAL INSTRUCTIONS:\n{custom_prompt}"
 
@@ -147,6 +155,105 @@ def extract_content_between_markers(text):
     return None
 
 
+def extract_fenced_code_blocks(text):
+    """Return fenced code blocks with their exact fences and body text."""
+    blocks = []
+    opening = None
+    body_lines = []
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if opening is None:
+            match = re.match(r'^(`{3,}|~{3,})[^\r\n]*(?:\r?\n)?$', stripped)
+            if match:
+                opening = (line, match.group(1)[0], len(match.group(1)))
+                body_lines = []
+            continue
+
+        opening_line, fence_char, fence_length = opening
+        closing_pattern = rf'^{re.escape(fence_char)}{{{fence_length},}}[ \t]*(?:\r?\n)?$'
+        if re.match(closing_pattern, stripped):
+            blocks.append((opening_line, ''.join(body_lines), line))
+            opening = None
+            body_lines = []
+        else:
+            body_lines.append(line)
+
+    return blocks
+
+
+def code_without_comment_bodies(code):
+    """Remove C-style comment text while retaining all code and delimiters."""
+    result = []
+    i = 0
+    quote = None
+
+    while i < len(code):
+        char = code[i]
+        next_char = code[i + 1] if i + 1 < len(code) else ''
+
+        if quote:
+            result.append(char)
+            if char == '\\' and i + 1 < len(code):
+                result.append(code[i + 1])
+                i += 2
+                continue
+            if char == quote:
+                quote = None
+            i += 1
+            continue
+
+        if char in ('"', "'"):
+            quote = char
+            result.append(char)
+            i += 1
+            continue
+
+        if char == '/' and next_char == '/':
+            result.extend('//')
+            i += 2
+            while i < len(code) and code[i] not in '\r\n':
+                i += 1
+            continue
+
+        if char == '/' and next_char == '*':
+            result.extend('/*')
+            i += 2
+            while i < len(code):
+                if code[i:i + 2] == '*/':
+                    result.extend('*/')
+                    i += 2
+                    break
+                i += 1
+            continue
+
+        result.append(char)
+        i += 1
+
+    return ''.join(result)
+
+
+def validate_code_blocks(source, translated):
+    """Ensure translation changed only C-style comment bodies inside code."""
+    source_blocks = extract_fenced_code_blocks(source)
+    translated_blocks = extract_fenced_code_blocks(translated)
+
+    if len(source_blocks) != len(translated_blocks):
+        return False, f"code block count changed ({len(source_blocks)} -> {len(translated_blocks)})"
+
+    for index, (source_block, translated_block) in enumerate(
+        zip(source_blocks, translated_blocks), 1
+    ):
+        source_opening, source_code, source_closing = source_block
+        translated_opening, translated_code, translated_closing = translated_block
+        if source_opening != translated_opening or source_closing != translated_closing:
+            return False, f"code block {index} fence changed"
+        if code_without_comment_bodies(source_code) != code_without_comment_bodies(translated_code):
+            return False, f"non-comment code changed in block {index}"
+
+    return True, None
+
+
 def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3):
     """Translate text using DeepSeek API with retry mechanism"""
 
@@ -170,6 +277,10 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
             extracted_content = extract_content_between_markers(translated_text)
 
             if extracted_content and len(extracted_content.strip()) > 0:
+                code_is_valid, code_error = validate_code_blocks(text, extracted_content)
+                if not code_is_valid:
+                    print(f"    Attempt {attempt + 1}: Rejected translation because {code_error}")
+                    continue
                 if attempt > 0:
                     print(f"    Translation successful on attempt {attempt + 1}")
                 return extracted_content
@@ -214,8 +325,11 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
                     if start_line != -1 and end_line != -1 and start_line < end_line:
                         emergency_content = '\n'.join(lines[start_line+1:end_line]).strip()
                         if emergency_content:
-                            print(f"    Emergency extraction successful")
-                            return emergency_content
+                            code_is_valid, code_error = validate_code_blocks(text, emergency_content)
+                            if code_is_valid:
+                                print(f"    Emergency extraction successful")
+                                return emergency_content
+                            print(f"    Emergency extraction rejected because {code_error}")
 
                 continue
 
