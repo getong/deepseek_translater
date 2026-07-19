@@ -171,7 +171,7 @@ def generate_docx_with_script(html_file, temp_dir, metadata=None):
     
     try:
         # Run calibre_html_publish.py script with output filename
-        cmd = ["python3", publish_script, html_file, "-o", docx_file]
+        cmd = [sys.executable, publish_script, html_file, "-o", docx_file]
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         
         if os.path.exists(docx_file):
@@ -215,7 +215,7 @@ def generate_epub_with_script(html_file, temp_dir, metadata=None):
     
     try:
         # Run calibre_html_publish.py script with output filename
-        cmd = ["python3", publish_script, html_file, "-o", epub_file]
+        cmd = [sys.executable, publish_script, html_file, "-o", epub_file]
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         
         if os.path.exists(epub_file):
@@ -259,7 +259,7 @@ def generate_pdf_with_script(html_file, temp_dir, metadata=None):
     
     try:
         # Run calibre_html_publish.py script with output filename
-        cmd = ["python3", publish_script, html_file, "-o", pdf_file]
+        cmd = [sys.executable, publish_script, html_file, "-o", pdf_file]
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         
         if os.path.exists(pdf_file):

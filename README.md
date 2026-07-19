@@ -2,13 +2,17 @@
 
 这是一个基于 DeepSeek API 的文档翻译工具集，支持多种文档格式的批量翻译。
 
-[![Version](https://img.shields.io/badge/version-v2.1-blue.svg)](https://github.com/your-username/claude_translater)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.6+-blue.svg)](https://python.org)
+[![Version](https://img.shields.io/badge/version-v2.1-blue.svg)](https://github.com/getong/deepseek_translater)
+[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://python.org)
 
-## 🎯 最新重大更新 v2.1
+## 最近更新
 
-### 管道优化 - Temp目录一致性修复
+### 虚拟环境路径修复
+- `translatebook.sh` 始终使用项目内的 `venv/bin/python`，不再依赖激活脚本中可能过期的绝对路径
+- 项目目录移动或重命名后，不会误用 Homebrew 的系统 Python，也不会再触发 PEP 668 `externally-managed-environment`
+- 依赖安装和所有流水线步骤使用同一个 Python 解释器
+
+### v2.1 管道优化 - Temp目录一致性修复
 - **修复**: Step 4 和 Step 5 temp目录查找逻辑错误
 - **优化**: 确保所有步骤使用一致的temp目录传递机制
 - **增强**: 改进多项目并行处理时的目录识别
@@ -31,7 +35,7 @@ PDF/DOCX/EPUB → Calibre → HTMLZ → 解压 → HTML + Images
 ## 工具概览
 
 ### 1. translatebook.sh - 统一文档翻译工具 ⭐️ 主要工具
-完整的文档翻译管道，支持 PDF、DOCX、EPUB 等格式，输出为 HTML 格式。
+完整的文档翻译管道，支持 PDF、DOCX、EPUB 等格式，输出 HTML、DOCX、EPUB 和 PDF。
 
 ### 2. 01_convert_to_htmlz.py - 新一代转换引擎
 使用 Calibre 进行高质量文件转换，替代传统PDF解析方案。
@@ -52,6 +56,8 @@ brew install --cask calibre  # macOS
 
 # 在项目根目录创建 .env，并填写 DeepSeek API key
 printf 'DEEPSEEK_API_KEY=your_api_key_here\n' > .env
+
+# Python 依赖由 translatebook.sh 自动安装到项目内的 venv/
 ```
 
 ### 2. 一键翻译
@@ -63,7 +69,7 @@ printf 'DEEPSEEK_API_KEY=your_api_key_here\n' > .env
 ```
 
 ### 3. 获取结果
-翻译完成后，在 `output/` 目录下获得 HTML 格式的翻译文档。
+翻译完成后，结果位于输入文件对应的 `{文件名}_temp/` 目录。例如 `book.pdf` 的结果目录是 `book_temp/`，其中包含 `book.html`、`book.docx`、`book.epub` 和 `book.pdf`。
 
 ## 功能特点
 
@@ -106,11 +112,15 @@ python3 --version
 
 ### Python 包依赖
 ```bash
-# 自动安装的包（通过 translatebook.sh）
-pip install -r requirements.txt
+# 推荐：直接运行主脚本，由它创建 venv/ 并安装 requirements.txt
+./translatebook.sh --dry-run book.pdf
+
+# 需要手动安装或检查时，明确使用项目虚拟环境
+python3 -m venv venv
+venv/bin/python -m pip install -r requirements.txt
 
 # PowerPoint 翻译工具额外依赖
-pip install python-pptx
+venv/bin/python -m pip install python-pptx
 ```
 
 ## 使用说明
@@ -153,17 +163,17 @@ pip install python-pptx
 ### 独立转换工具
 ```bash
 # 单独使用新转换引擎
-python3 01_convert_to_htmlz.py input.pdf --chunk-size 5000
-python3 01_convert_to_htmlz.py document.docx 
-python3 01_convert_to_htmlz.py ebook.epub
+venv/bin/python 01_convert_to_htmlz.py input.pdf --chunk-size 5000
+venv/bin/python 01_convert_to_htmlz.py document.docx
+venv/bin/python 01_convert_to_htmlz.py ebook.epub
 ```
 
 ### Markdown清理工具
 ```bash
 # 清理markdown换行符
-python3 clean_markdown.py book.md
-python3 clean_markdown.py temp_directory/
-python3 clean_markdown.py *.md
+venv/bin/python clean_markdown.py book.md
+venv/bin/python clean_markdown.py temp_directory/
+venv/bin/python clean_markdown.py *.md
 ```
 
 ## 新架构处理流程
@@ -194,6 +204,9 @@ page0001.md ~ page0042.md → DeepSeek翻译 → 合并 → HTML → 目录 → 
     ├── output_page0001.md # 翻译后文件
     ├── output.md          # 合并后翻译
     ├── book.html          # 最终HTML输出
+    ├── book.docx          # Word输出
+    ├── book.epub          # EPUB输出
+    ├── book.pdf           # PDF输出
     └── images/            # 图片目录
 ```
 
@@ -247,7 +260,9 @@ page0001.md ~ page0042.md → DeepSeek翻译 → 合并 → HTML → 目录 → 
 |------|----------|
 | Calibre未安装 | `brew install --cask calibre` (macOS) 或 `sudo apt-get install calibre` (Linux) |
 | DeepSeek认证失败 | 检查项目根目录 `.env` 中的 `DEEPSEEK_API_KEY` |
-| pypandoc缺失 | `pip install pypandoc` |
+| `externally-managed-environment` | 更新 `translatebook.sh` 后重试；不要向 Homebrew 系统 Python 安装包 |
+| 虚拟环境损坏 | `./translatebook.sh --reinstall-packages book.pdf` |
+| pypandoc缺失 | `venv/bin/python -m pip install pypandoc` |
 | 转换失败 | 检查文件格式和Calibre版本 |
 | 权限问题 | 确保脚本有执行权限：`chmod +x translatebook.sh` |
 | temp目录错误 | v2.1已修复，确保使用最新版本 |
@@ -259,11 +274,11 @@ page0001.md ~ page0042.md → DeepSeek翻译 → 合并 → HTML → 目录 → 
 ./translatebook.sh -v --dry-run book.pdf
 
 # 单独测试转换
-python3 01_convert_to_htmlz.py book.pdf --chunk-size 5000
+venv/bin/python 01_convert_to_htmlz.py book.pdf --chunk-size 5000
 
 # 检查环境
-which calibre  # 检查Calibre是否正确安装
-python3 -c "import pypandoc; print('pypandoc OK')"  # 检查pypandoc
+which ebook-convert
+venv/bin/python -c "import sys, pypandoc; print(sys.executable); print('pypandoc OK')"
 ```
 
 ## 性能优化
@@ -306,11 +321,15 @@ python3 -c "import pypandoc; print('pypandoc OK')"  # 检查pypandoc
 
 ## 项目状态
 
-📅 **最后更新**: 2025年8月  
-✅ **状态**: 活跃开发中  
-🔄 **架构**: v2.1 Calibre HTMLZ 统一转换 + 管道优化  
-🎯 **主要功能**: PDF/DOCX/EPUB → 中文翻译 → HTML输出  
-🔧 **最新改进**: 修复temp目录逻辑，支持多项目并行  
+📅 **最后更新**: 2026年7月
+
+✅ **状态**: 活跃开发中
+
+🔄 **架构**: v2.1 Calibre HTMLZ 统一转换 + 管道优化
+
+🎯 **主要功能**: PDF/DOCX/EPUB → 中文翻译 → HTML/DOCX/EPUB/PDF输出
+
+🔧 **最新改进**: 修复项目目录变更后虚拟环境解释器路径失效的问题
 
 ## 🤝 贡献指南
 
@@ -318,8 +337,8 @@ python3 -c "import pypandoc; print('pypandoc OK')"  # 检查pypandoc
 
 ### 开发环境
 ```bash
-git clone https://github.com/your-username/claude_translater.git
-cd claude_translater
+git clone https://github.com/getong/deepseek_translater.git
+cd deepseek_translater
 chmod +x translatebook.sh
 ```
 
@@ -329,12 +348,8 @@ chmod +x translatebook.sh
 ./translatebook.sh --dry-run test.pdf
 
 # 测试转换引擎
-python3 01_convert_to_htmlz.py test.pdf --chunk-size 5000
+venv/bin/python 01_convert_to_htmlz.py test.pdf --chunk-size 5000
 ```
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
 
 ---
 

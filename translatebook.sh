@@ -24,6 +24,7 @@ STEP_START=1
 STEP_END=7
 REINSTALL_PACKAGES=false
 OCR_MODE=false
+PYTHON_BIN=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -145,63 +146,62 @@ EOF
 # Setup Python virtual environment
 setup_venv() {
     log_info "Setting up Python virtual environment..."
-    
+
     local venv_dir="${SCRIPT_DIR}/venv"
-    
+    local requirements_file="${SCRIPT_DIR}/requirements.txt"
+
+    if ! command -v python3 &> /dev/null; then
+        log_error "Python 3 is required but not installed"
+        exit 3
+    fi
+
     # Create virtual environment if it doesn't exist or if reinstall is requested
-    if [[ ! -d "$venv_dir" ]] || [[ "$REINSTALL_PACKAGES" == true ]]; then
+    if [[ ! -x "$venv_dir/bin/python" ]] || [[ "$REINSTALL_PACKAGES" == true ]]; then
         if [[ "$REINSTALL_PACKAGES" == true ]] && [[ -d "$venv_dir" ]]; then
             log_info "Removing existing virtual environment for reinstall..."
             rm -rf "$venv_dir"
         fi
-        
+
         log_info "Creating Python virtual environment..."
-        python3 -m venv "$venv_dir"
-        if [[ $? -ne 0 ]]; then
+        if ! python3 -m venv "$venv_dir"; then
             log_error "Failed to create virtual environment"
             exit 3
         fi
     fi
-    
-    # Activate virtual environment
-    source "$venv_dir/bin/activate"
-    if [[ $? -ne 0 ]]; then
-        log_error "Failed to activate virtual environment"
+
+    PYTHON_BIN="$venv_dir/bin/python"
+    if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.prefix == sys.base_prefix)' &> /dev/null; then
+        log_error "Invalid Python virtual environment: $venv_dir"
+        log_error "Run again with --reinstall-packages to rebuild it"
         exit 3
     fi
-    
-    log_success "Virtual environment activated"
-    
-    # Install required packages if needed
-    local requirements_file="${SCRIPT_DIR}/requirements.txt"
-    if [[ ! -f "$venv_dir/.packages_installed" ]] || [[ "$REINSTALL_PACKAGES" == true ]]; then
+
+    log_success "Virtual environment ready: $PYTHON_BIN"
+
+    # A marker alone is insufficient when a project or virtual environment was moved.
+    if [[ ! -f "$venv_dir/.packages_installed" ]] || \
+       ! "$PYTHON_BIN" -c 'import bs4, docx, dotenv, ebooklib, fitz, lxml, markdown, openai, pdf2image, PIL, pypandoc' &> /dev/null; then
         log_info "Installing required Python packages..."
-        
+
         if [[ -f "$requirements_file" ]]; then
             log_info "Installing packages from requirements.txt..."
-            python3 -m pip install -r "$requirements_file"
+            if ! "$PYTHON_BIN" -m pip install -r "$requirements_file"; then
+                log_error "Failed to install Python packages into $venv_dir"
+                exit 3
+            fi
         else
             log_info "Installing essential packages..."
-            python3 -m pip install python-docx PyMuPDF ebooklib beautifulsoup4 lxml markdown Pillow pdf2image pypandoc openai python-dotenv
+            if ! "$PYTHON_BIN" -m pip install python-docx PyMuPDF ebooklib beautifulsoup4 lxml markdown Pillow pdf2image pypandoc openai python-dotenv; then
+                log_error "Failed to install Python packages into $venv_dir"
+                exit 3
+            fi
         fi
-        
-        if [[ $? -ne 0 ]]; then
-            log_warning "Some packages failed to install, but continuing..."
-            log_info "Missing packages will be handled gracefully by the scripts"
-            log_info "If PIL/Pillow is missing, images will not be compressed but processing will continue"
-        fi
-        
+
         # Mark packages as installed
         touch "$venv_dir/.packages_installed"
         log_success "Python packages installation completed"
     else
         log_info "Python packages already installed, skipping installation"
-    fi
-
-    # Existing virtual environments may predate the DeepSeek migration.
-    if ! python3 -c "import openai, dotenv" &> /dev/null; then
-        log_info "Installing DeepSeek API dependencies..."
-        python3 -m pip install openai python-dotenv
     fi
 }
 
@@ -209,9 +209,9 @@ setup_venv() {
 check_dependencies() {
     log_info "Checking dependencies..."
     
-    # Check Python
-    if ! command -v python3 &> /dev/null; then
-        log_error "Python 3 is required but not installed"
+    # setup_venv must select the project interpreter before pipeline execution.
+    if [[ -z "$PYTHON_BIN" ]] || [[ ! -x "$PYTHON_BIN" ]]; then
+        log_error "Project Python interpreter is not available"
         exit 3
     fi
     
@@ -374,25 +374,17 @@ execute_python_script() {
     log_step "$step_num" "$description"
     
     if [[ "$DRY_RUN" == true ]]; then
-        log_info "[DRY RUN] Would execute: python3 ${script_name}"
+        log_info "[DRY RUN] Would execute: $PYTHON_BIN ${script_name}"
         return 0
     fi
-    
-    # Ensure virtual environment is activated before running Python scripts
-    local venv_dir="${SCRIPT_DIR}/venv"
-    if [[ -d "$venv_dir" ]]; then
-        source "$venv_dir/bin/activate"
-    fi
-    
-    local cmd="python3 ${SCRIPT_DIR}/${script_name}"
-    
+
     if [[ "$VERBOSE" == true ]]; then
-        log_info "Executing: $cmd"
+        log_info "Executing: $PYTHON_BIN ${SCRIPT_DIR}/${script_name}"
     fi
-    
-    if ! $cmd; then
+
+    if ! "$PYTHON_BIN" "${SCRIPT_DIR}/${script_name}"; then
         log_error "Step $step_num failed: $description"
-        log_error "Command: $cmd"
+        log_error "Command: $PYTHON_BIN ${SCRIPT_DIR}/${script_name}"
         exit 1
     fi
     
@@ -467,12 +459,6 @@ main() {
         if [[ "$DRY_RUN" == true ]]; then
             log_info "[DRY RUN] Would convert PDF using OCR: $INPUT_FILE"
         else
-            # Ensure virtual environment is activated
-            local venv_dir="${SCRIPT_DIR}/venv"
-            if [[ -d "$venv_dir" ]]; then
-                source "$venv_dir/bin/activate"
-            fi
-
             # Check if 01_ocr_to_md.py exists
             if [[ ! -f "${SCRIPT_DIR}/01_ocr_to_md.py" ]]; then
                 log_error "OCR converter not found: 01_ocr_to_md.py"
@@ -480,13 +466,13 @@ main() {
             fi
 
             # Convert PDF using OCR
-            local ocr_cmd="python3 ${SCRIPT_DIR}/01_ocr_to_md.py \"$INPUT_FILE\" -l \"$INPUT_LANG\" --olang \"$OUTPUT_LANG\""
+            local ocr_cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/01_ocr_to_md.py" "$INPUT_FILE" -l "$INPUT_LANG" --olang "$OUTPUT_LANG")
 
             if [[ "$VERBOSE" == true ]]; then
-                log_info "Executing: $ocr_cmd"
+                log_info "Executing: ${ocr_cmd[*]}"
             fi
 
-            if ! eval $ocr_cmd; then
+            if ! "${ocr_cmd[@]}"; then
                 log_error "OCR conversion failed"
                 exit 1
             fi
@@ -505,12 +491,6 @@ main() {
         if [[ "$DRY_RUN" == true ]]; then
             log_info "[DRY RUN] Would convert file to markdown chunks: $original_file"
         else
-            # Ensure virtual environment is activated
-            local venv_dir="${SCRIPT_DIR}/venv"
-            if [[ -d "$venv_dir" ]]; then
-                source "$venv_dir/bin/activate"
-            fi
-            
             # Check if 01_convert_to_htmlz.py exists
             if [[ ! -f "${SCRIPT_DIR}/01_convert_to_htmlz.py" ]]; then
                 log_error "File converter not found: 01_convert_to_htmlz.py"
@@ -518,13 +498,13 @@ main() {
             fi
             
             # Convert file using new method
-            local convert_cmd="python3 ${SCRIPT_DIR}/01_convert_to_htmlz.py \"$original_file\" -l \"$INPUT_LANG\" --olang \"$OUTPUT_LANG\""
+            local convert_cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/01_convert_to_htmlz.py" "$original_file" -l "$INPUT_LANG" --olang "$OUTPUT_LANG")
             
             if [[ "$VERBOSE" == true ]]; then
-                log_info "Executing: $convert_cmd"
+                log_info "Executing: ${convert_cmd[*]}"
             fi
             
-            if ! eval $convert_cmd; then
+            if ! "${convert_cmd[@]}"; then
                 log_error "File conversion failed"
                 exit 1
             fi
@@ -563,21 +543,15 @@ main() {
         log_step "1" "${step_descriptions[0]}"
         
         if [[ "$DRY_RUN" == true ]]; then
-            log_info "[DRY RUN] Would execute: python3 ${step_scripts[0]} with parameters"
+            log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[0]} with parameters"
         else
-            # Ensure virtual environment is activated before running Python scripts
-            local venv_dir="${SCRIPT_DIR}/venv"
-            if [[ -d "$venv_dir" ]]; then
-                source "$venv_dir/bin/activate"
-            fi
-            
-            local cmd="python3 ${SCRIPT_DIR}/${step_scripts[0]} \"$INPUT_FILE\" -l \"$INPUT_LANG\" --olang \"$OUTPUT_LANG\""
+            local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[0]}" "$INPUT_FILE" -l "$INPUT_LANG" --olang "$OUTPUT_LANG")
             
             if [[ "$VERBOSE" == true ]]; then
-                log_info "Executing: $cmd"
+                log_info "Executing: ${cmd[*]}"
             fi
             
-            if ! eval $cmd; then
+            if ! "${cmd[@]}"; then
                 log_error "Step 1 failed: ${step_descriptions[0]}"
                 exit 1
             fi
@@ -594,24 +568,18 @@ main() {
                 log_step "3" "${step_descriptions[2]}"
                 
                 if [[ "$DRY_RUN" == true ]]; then
-                    log_info "[DRY RUN] Would execute: python3 ${step_scripts[2]} -p \"$CUSTOM_PROMPT\""
+                    log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[2]} with a custom prompt"
                 else
-                    # Ensure virtual environment is activated before running Python scripts
-                    local venv_dir="${SCRIPT_DIR}/venv"
-                    if [[ -d "$venv_dir" ]]; then
-                        source "$venv_dir/bin/activate"
-                    fi
-                    
                     # Use input file name to determine temp directory
                     local base_temp_dir="${INPUT_FILE%.*}_temp"
                     
-                    local cmd="python3 ${SCRIPT_DIR}/${step_scripts[2]} --temp-dir \"$base_temp_dir\" -p \"$CUSTOM_PROMPT\""
+                    local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[2]}" --temp-dir "$base_temp_dir" -p "$CUSTOM_PROMPT")
                     
                     if [[ "$VERBOSE" == true ]]; then
-                        log_info "Executing: $cmd"
+                        log_info "Executing: ${cmd[*]}"
                     fi
                     
-                    if ! eval $cmd; then
+                    if ! "${cmd[@]}"; then
                         log_error "Step 3 failed: ${step_descriptions[2]}"
                         log_error "Translation is incomplete. Please fix the issues and run again."
                         exit 1
@@ -624,14 +592,8 @@ main() {
                 log_step "6" "${step_descriptions[5]}"
                 
                 if [[ "$DRY_RUN" == true ]]; then
-                    log_info "[DRY RUN] Would execute: python3 ${step_scripts[5]} with base_temp/book.html output"
+                    log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[5]} with base_temp/book.html output"
                 else
-                    # Ensure virtual environment is activated before running Python scripts
-                    local venv_dir="${SCRIPT_DIR}/venv"
-                    if [[ -d "$venv_dir" ]]; then
-                        source "$venv_dir/bin/activate"
-                    fi
-                    
                     # Use input file name to determine temp directory
                     local base_temp_dir="${INPUT_FILE%.*}_temp"
                     
@@ -641,13 +603,13 @@ main() {
                     fi
                     
                     # Step 6 will process book.html in the temp directory directly
-                    local cmd="python3 ${SCRIPT_DIR}/${step_scripts[5]}"
+                    local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[5]}")
                     
                     if [[ "$VERBOSE" == true ]]; then
-                        log_info "Executing: $cmd"
+                        log_info "Executing: ${cmd[*]}"
                     fi
                     
-                    if ! eval $cmd; then
+                    if ! "${cmd[@]}"; then
                         log_error "Step 6 failed: ${step_descriptions[5]}"
                         exit 1
                     fi
@@ -660,24 +622,18 @@ main() {
                     log_step "3" "${step_descriptions[2]}"
                     
                     if [[ "$DRY_RUN" == true ]]; then
-                        log_info "[DRY RUN] Would execute: python3 ${step_scripts[2]}"
+                        log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[2]}"
                     else
-                        # Ensure virtual environment is activated before running Python scripts
-                        local venv_dir="${SCRIPT_DIR}/venv"
-                        if [[ -d "$venv_dir" ]]; then
-                            source "$venv_dir/bin/activate"
-                        fi
-                        
                         # Use input file name to determine temp directory
                         local base_temp_dir="${INPUT_FILE%.*}_temp"
                         
-                        local cmd="python3 ${SCRIPT_DIR}/${step_scripts[2]} --temp-dir \"$base_temp_dir\""
+                        local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[2]}" --temp-dir "$base_temp_dir")
                         
                         if [[ "$VERBOSE" == true ]]; then
-                            log_info "Executing: $cmd"
+                            log_info "Executing: ${cmd[*]}"
                         fi
                         
-                        if ! eval $cmd; then
+                        if ! "${cmd[@]}"; then
                             log_error "Step 3 failed: ${step_descriptions[2]}"
                             exit 1
                         fi
@@ -690,24 +646,18 @@ main() {
                     
                     if [[ "$DRY_RUN" == true ]]; then
                         local base_temp_dir="${INPUT_FILE%.*}_temp"
-                        log_info "[DRY RUN] Would execute: python3 ${step_scripts[3]} --temp-dir \"$base_temp_dir\""
+                        log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[3]} --temp-dir \"$base_temp_dir\""
                     else
-                        # Ensure virtual environment is activated before running Python scripts
-                        local venv_dir="${SCRIPT_DIR}/venv"
-                        if [[ -d "$venv_dir" ]]; then
-                            source "$venv_dir/bin/activate"
-                        fi
-                        
                         # Use input file name to determine temp directory
                         local base_temp_dir="${INPUT_FILE%.*}_temp"
                         
-                        local cmd="python3 ${SCRIPT_DIR}/${step_scripts[3]} --temp-dir \"$base_temp_dir\""
+                        local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[3]}" --temp-dir "$base_temp_dir")
                         
                         if [[ "$VERBOSE" == true ]]; then
-                            log_info "Executing: $cmd"
+                            log_info "Executing: ${cmd[*]}"
                         fi
                         
-                        if ! eval $cmd; then
+                        if ! "${cmd[@]}"; then
                             log_error "Step 4 failed: ${step_descriptions[3]}"
                             exit 1
                         fi
@@ -720,24 +670,18 @@ main() {
                     
                     if [[ "$DRY_RUN" == true ]]; then
                         local base_temp_dir="${INPUT_FILE%.*}_temp"
-                        log_info "[DRY RUN] Would execute: python3 ${step_scripts[4]} --temp-dir \"$base_temp_dir\""
+                        log_info "[DRY RUN] Would execute: $PYTHON_BIN ${step_scripts[4]} --temp-dir \"$base_temp_dir\""
                     else
-                        # Ensure virtual environment is activated before running Python scripts
-                        local venv_dir="${SCRIPT_DIR}/venv"
-                        if [[ -d "$venv_dir" ]]; then
-                            source "$venv_dir/bin/activate"
-                        fi
-                        
                         # Use input file name to determine temp directory
                         local base_temp_dir="${INPUT_FILE%.*}_temp"
                         
-                        local cmd="python3 ${SCRIPT_DIR}/${step_scripts[4]} --temp-dir \"$base_temp_dir\""
+                        local cmd=("$PYTHON_BIN" "${SCRIPT_DIR}/${step_scripts[4]}" --temp-dir "$base_temp_dir")
                         
                         if [[ "$VERBOSE" == true ]]; then
-                            log_info "Executing: $cmd"
+                            log_info "Executing: ${cmd[*]}"
                         fi
                         
-                        if ! eval $cmd; then
+                        if ! "${cmd[@]}"; then
                             log_error "Step 5 failed: ${step_descriptions[4]}"
                             exit 1
                         fi
