@@ -9,11 +9,13 @@ import deepseek_client
 class FakeCompletions:
     def __init__(self):
         self.request = None
+        self.finish_reason = "stop"
 
     def create(self, **kwargs):
         self.request = kwargs
         message = SimpleNamespace(content="  translated text  ")
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+        choice = SimpleNamespace(message=message, finish_reason=self.finish_reason)
+        return SimpleNamespace(choices=[choice])
 
 
 class FakeClient:
@@ -41,6 +43,7 @@ class DeepSeekClientTest(unittest.TestCase):
         self.assertEqual(request["messages"][0]["content"], "Translate")
         self.assertEqual(request["messages"][1]["content"], "hello")
         self.assertEqual(request["timeout"], 30)
+        self.assertEqual(request["max_tokens"], 16384)
         self.assertEqual(
             request["extra_body"], {"thinking": {"type": "disabled"}}
         )
@@ -51,6 +54,11 @@ class DeepSeekClientTest(unittest.TestCase):
 
         request = self.client.chat.completions.request
         self.assertEqual(request["model"], "custom-model")
+
+    def test_incomplete_response_is_rejected(self):
+        self.client.chat.completions.finish_reason = "length"
+
+        self.assertIsNone(deepseek_client.translate("hello"))
 
 
 if __name__ == "__main__":

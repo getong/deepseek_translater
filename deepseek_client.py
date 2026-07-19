@@ -21,6 +21,7 @@ _client = None
 API_KEY = None
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MAX_TOKENS = 16384
 
 
 def _load_api_key():
@@ -55,7 +56,7 @@ def get_client():
     return _client
 
 
-def translate(text, prompt=None, model=None, timeout=180):
+def translate(text, prompt=None, model=None, timeout=180, max_tokens=None):
     """
     Send a translation request to DeepSeek API.
 
@@ -64,6 +65,7 @@ def translate(text, prompt=None, model=None, timeout=180):
         prompt: Optional system prompt.
         model: DeepSeek model name. Defaults to DEEPSEEK_MODEL or V4 Flash.
         timeout: Request timeout in seconds.
+        max_tokens: Maximum output tokens. Defaults to DEEPSEEK_MAX_TOKENS or 16384.
 
     Returns:
         The translated text string, or None on failure.
@@ -71,6 +73,9 @@ def translate(text, prompt=None, model=None, timeout=180):
     try:
         client = get_client()
         selected_model = model or os.environ.get("DEEPSEEK_MODEL", DEFAULT_MODEL)
+        output_limit = max_tokens or int(
+            os.environ.get("DEEPSEEK_MAX_TOKENS", DEFAULT_MAX_TOKENS)
+        )
         response = client.chat.completions.create(
             model=selected_model,
             messages=[
@@ -84,9 +89,15 @@ def translate(text, prompt=None, model=None, timeout=180):
                 {"role": "user", "content": text},
             ],
             timeout=timeout,
+            max_tokens=output_limit,
             extra_body={"thinking": {"type": "disabled"}},
         )
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        if choice.finish_reason != "stop":
+            raise RuntimeError(
+                f"DeepSeek response did not finish normally: {choice.finish_reason}"
+            )
+        content = choice.message.content
         if not content:
             raise RuntimeError("DeepSeek returned an empty response")
         return content.strip()

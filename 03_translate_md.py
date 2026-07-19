@@ -111,7 +111,7 @@ IMPORTANT REQUIREMENTS:
 
 
 def extract_content_between_markers(text):
-    """Strictly extract content between START and END markers"""
+    """Extract marked content, tolerating a missing END on complete responses."""
     start_marker = '<!-- START -->'
     end_marker = '<!-- END -->'
 
@@ -136,6 +136,13 @@ def extract_content_between_markers(text):
         content_start = start_pos + len(start_marker)
         extracted = text[content_start:end_pos].strip()
         return extracted
+
+    if start_pos != -1 and end_pos == -1:
+        content_start = start_pos + len(start_marker)
+        extracted = text[content_start:].strip()
+        if extracted:
+            print("    Warning: END marker missing; accepting normally completed response")
+            return extracted
 
     return None
 
