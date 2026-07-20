@@ -54,8 +54,14 @@ PDF/DOCX/EPUB → Calibre → HTMLZ → 解压 → HTML + Images
 brew install --cask calibre  # macOS
 # 或者 sudo apt-get install calibre  # Linux
 
-# 在项目根目录创建 .env，并填写 DeepSeek API key
-printf 'DEEPSEEK_API_KEY=your_api_key_here\n' > .env
+# 在项目根目录创建 .env，填写 DeepSeek API key 及可选配置
+cat > .env << 'EOF'
+DEEPSEEK_API_KEY=your_api_key_here
+# 可选配置（有默认值，不填则使用默认）
+# DEEPSEEK_MODEL=deepseek-v4-flash
+# DEEPSEEK_BASE_URL=https://api.deepseek.com
+# DEEPSEEK_MAX_TOKENS=16384
+EOF
 
 # Python 依赖由 translatebook.sh 自动安装到项目内的 venv/
 ```
@@ -105,8 +111,12 @@ printf 'DEEPSEEK_API_KEY=your_api_key_here\n' > .env
 # Python 3.8+
 python3 --version
 
-# DeepSeek API key
-# 在项目根目录的 .env 中配置 DEEPSEEK_API_KEY
+# DeepSeek API key（必需）及其他可选配置
+# 在项目根目录的 .env 中配置，完整示例：
+#   DEEPSEEK_API_KEY=your_key       # 必需
+#   DEEPSEEK_MODEL=deepseek-v4-flash # 可选，默认 deepseek-v4-flash
+#   DEEPSEEK_BASE_URL=https://api.deepseek.com # 可选
+#   DEEPSEEK_MAX_TOKENS=16384        # 可选
 
 # Calibre（新增必需）
 # macOS: brew install --cask calibre
