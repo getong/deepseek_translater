@@ -118,6 +118,54 @@ def save_image_block(block, images_dir, page_num, image_num):
     return (Path("images") / filename).as_posix()
 
 
+def save_rect_as_image(page, rect, images_dir, page_num, image_num):
+    """将 PyMuPDF 矩形区域渲染为图片并保存"""
+    images_dir = Path(images_dir)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"image_p{page_num:04d}_{image_num}.png"
+    pix = page.get_pixmap(clip=rect, dpi=200)
+    pix.save(images_dir / filename)
+    return (Path("images") / filename).as_posix()
+
+
+def get_figure_rects(page, blocks, expand=20):
+    page_w = page.rect.width
+    page_h = page.rect.height
+
+    drawings = page.get_drawings()
+    rects = []
+    for d in drawings:
+        r = d["rect"]
+        if r.width > page_w * 0.9 and r.height > page_h * 0.9:
+            continue
+        rects.append(r)
+
+    rects.extend([fitz.Rect(b["bbox"]) for b in blocks if b["type"] == 1])
+    
+    if not rects:
+        return []
+    
+    merged = []
+    for r in rects:
+        expanded_r = r + (-expand, -expand, expand, expand)
+        intersected = []
+        for i, mr in enumerate(merged):
+            if (mr + (-expand, -expand, expand, expand)).intersects(expanded_r):
+                intersected.append(i)
+                
+        if not intersected:
+            merged.append(r)
+        else:
+            new_r = r
+            for i in sorted(intersected, reverse=True):
+                new_r = new_r | merged[i]
+                del merged[i]
+            merged.append(new_r)
+            
+    final_rects = [mr for mr in merged if mr.width > 20 and mr.height > 20]
+    return final_rects
+
+
 def get_text_with_links_and_headings(
     page,
     page_links,
@@ -132,15 +180,36 @@ def get_text_with_links_and_headings(
     # into a later translation chunk.
     blocks = page.get_text("dict", flags=PDF_TEXT_FLAGS, sort=True)["blocks"]
     
+    figure_rects = get_figure_rects(page, blocks, expand=20)
+    yielded_figures = set()
     result_lines = []
     
-    image_num = 0
     for block in blocks:
+        b_rect = fitz.Rect(block["bbox"])
+        b_area = b_rect.get_area()
+        overlapping_fig_idx = None
+
+        for i, r in enumerate(figure_rects):
+            intersect = r & b_rect
+            intersect_area = intersect.get_area()
+            if (b_area > 0 and intersect_area > 0.6 * b_area) or (block["type"] == 1 and intersect_area > 0):
+                overlapping_fig_idx = i
+                break
+
+        if overlapping_fig_idx is not None:
+            if overlapping_fig_idx not in yielded_figures:
+                if images_dir is not None:
+                    image_path = save_rect_as_image(page, figure_rects[overlapping_fig_idx], images_dir, page_num, overlapping_fig_idx)
+                    result_lines.append(f"\n![]({image_path})\n")
+                yielded_figures.add(overlapping_fig_idx)
+            continue
+            
         if block["type"] == 1:
+            # 回退：如果图片块由于某种原因不在 figure_rects 中
             if images_dir is not None:
-                image_path = save_image_block(block, images_dir, page_num, image_num)
-                result_lines.append(f"![]({image_path})")
-                image_num += 1
+                fallback_idx = overlapping_fig_idx or (len(figure_rects) + 999)
+                image_path = save_image_block(block, images_dir, page_num, fallback_idx)
+                result_lines.append(f"\n![]({image_path})\n")
             continue
 
         if block["type"] != 0:
@@ -196,6 +265,13 @@ def get_text_with_links_and_headings(
                         line_text = "### " + text_stripped
                 
                 result_lines.append(line_text)
+    
+    # 确保没有被块覆盖的纯矢量图也输出
+    for i, r in enumerate(figure_rects):
+        if i not in yielded_figures:
+            if images_dir is not None:
+                image_path = save_rect_as_image(page, r, images_dir, page_num, i)
+                result_lines.append(f"\n![]({image_path})\n")
     
     return "\n".join(result_lines)
 
