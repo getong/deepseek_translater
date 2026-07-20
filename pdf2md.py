@@ -180,7 +180,44 @@ def get_text_with_links_and_headings(
     # into a later translation chunk.
     blocks = page.get_text("dict", flags=PDF_TEXT_FLAGS, sort=True)["blocks"]
     
-    figure_rects = get_figure_rects(page, blocks, expand=20)
+    original_figure_rects = get_figure_rects(page, blocks, expand=20)
+    # 计算渲染边界，包含相关的文本元素
+    render_rects = [fitz.Rect(r) for r in original_figure_rects]
+    
+    # 迭代扩展渲染边界，把与图表相邻/重叠的短文本（标签、说明）也包括进来
+    page_w = page.rect.width
+    page_h = page.rect.height
+    while True:
+        expanded_any = False
+        for block in blocks:
+            if block["type"] != 0:
+                continue
+            b_rect = fitz.Rect(block["bbox"])
+            b_area = b_rect.get_area()
+            text = "".join([span["text"] for line in block.get("lines", []) for span in line.get("spans", [])]).strip()
+            
+            # 排除页眉页脚
+            if b_rect.y0 < 50 or b_rect.y1 > page_h - 50:
+                continue
+            # 排除图表的 Caption（我们希望它在外面被翻译）
+            if text.lower().startswith("figure ") or text.startswith("图") or text.startswith("表"):
+                continue
+            # 排除明显的正文段落
+            if b_rect.width > page_w * 0.7:
+                continue
+                
+            for i, r in enumerate(render_rects):
+                test_r = r + (-20, -20, 20, 20)
+                intersect = test_r & b_rect
+                # 如果这个文本块与（带外扩的）图片边框有重叠
+                if intersect.get_area() > 0.1 * b_area:
+                    new_r = r | b_rect
+                    if new_r != r:
+                        render_rects[i] = new_r
+                        expanded_any = True
+        if not expanded_any:
+            break
+
     yielded_figures = set()
     result_lines = []
     
@@ -188,18 +225,34 @@ def get_text_with_links_and_headings(
         b_rect = fitz.Rect(block["bbox"])
         b_area = b_rect.get_area()
         overlapping_fig_idx = None
+        
+        text = ""
+        if block["type"] == 0:
+            text = "".join([span["text"] for line in block.get("lines", []) for span in line.get("spans", [])]).strip()
 
-        for i, r in enumerate(figure_rects):
+        # 判断块是否属于图表（使用扩展后的 render_rects）
+        for i, r in enumerate(render_rects):
             intersect = r & b_rect
             intersect_area = intersect.get_area()
+            # 如果是图片块，或者文本块大部分在 render_rect 内部，就算作图表的一部分
             if (b_area > 0 and intersect_area > 0.6 * b_area) or (block["type"] == 1 and intersect_area > 0):
+                # 如果是页眉、Caption、或者太宽的正文且没有和核心元素重叠，则不能被划入图表隐去
+                if block["type"] == 0:
+                    if b_rect.y0 < 50 or b_rect.y1 > page_h - 50:
+                        continue
+                    if text.lower().startswith("figure ") or text.startswith("图") or text.startswith("表"):
+                        continue
+                    if b_rect.width > page_w * 0.7:
+                        continue
                 overlapping_fig_idx = i
                 break
 
         if overlapping_fig_idx is not None:
             if overlapping_fig_idx not in yielded_figures:
                 if images_dir is not None:
-                    image_path = save_rect_as_image(page, figure_rects[overlapping_fig_idx], images_dir, page_num, overlapping_fig_idx)
+                    padded_rect = render_rects[overlapping_fig_idx] + (-10, -10, 10, 10)
+                    padded_rect &= page.rect
+                    image_path = save_rect_as_image(page, padded_rect, images_dir, page_num, overlapping_fig_idx)
                     result_lines.append(f"\n![]({image_path})\n")
                 yielded_figures.add(overlapping_fig_idx)
             continue
@@ -267,10 +320,12 @@ def get_text_with_links_and_headings(
                 result_lines.append(line_text)
     
     # 确保没有被块覆盖的纯矢量图也输出
-    for i, r in enumerate(figure_rects):
+    for i, r in enumerate(original_figure_rects):
         if i not in yielded_figures:
             if images_dir is not None:
-                image_path = save_rect_as_image(page, r, images_dir, page_num, i)
+                padded_rect = render_rects[i] + (-10, -10, 10, 10)
+                padded_rect &= page.rect
+                image_path = save_rect_as_image(page, padded_rect, images_dir, page_num, i)
                 result_lines.append(f"\n![]({image_path})\n")
     
     return "\n".join(result_lines)
