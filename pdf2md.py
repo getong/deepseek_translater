@@ -175,41 +175,28 @@ def get_text_with_links_and_headings(
     page_num=0,
 ):
     """提取页面文本和图片，嵌入链接并识别标题。"""
-    # PDF content streams are not necessarily in visual order. Sorting keeps a
-    # figure between its introducing paragraph and caption instead of moving it
-    # into a later translation chunk.
     blocks = page.get_text("dict", flags=PDF_TEXT_FLAGS, sort=True)["blocks"]
     
     original_figure_rects = get_figure_rects(page, blocks, expand=20)
-    # 计算渲染边界，包含相关的文本元素
     render_rects = [fitz.Rect(r) for r in original_figure_rects]
     
-    # 迭代扩展渲染边界，把与图表相邻/重叠的短文本（标签、说明）也包括进来
     page_w = page.rect.width
     page_h = page.rect.height
     while True:
         expanded_any = False
         for block in blocks:
-            if block["type"] != 0:
-                continue
+            if block["type"] != 0: continue
             b_rect = fitz.Rect(block["bbox"])
             b_area = b_rect.get_area()
-            text = "".join([span["text"] for line in block.get("lines", []) for span in line.get("spans", [])]).strip()
+            text_str = "".join([span["text"] for line in block.get("lines", []) for span in line.get("spans", [])]).strip()
             
-            # 排除页眉页脚
-            if b_rect.y0 < 50 or b_rect.y1 > page_h - 50:
-                continue
-            # 排除图表的 Caption（我们希望它在外面被翻译）
-            if text.lower().startswith("figure ") or text.startswith("图") or text.startswith("表"):
-                continue
-            # 排除明显的正文段落
-            if b_rect.width > page_w * 0.7:
-                continue
+            if b_rect.y0 < 50 or b_rect.y1 > page_h - 50: continue
+            if text_str.lower().startswith("figure ") or text_str.startswith("图") or text_str.startswith("表"): continue
+            if b_rect.width > page_w * 0.7: continue
                 
             for i, r in enumerate(render_rects):
                 test_r = r + (-20, -20, 20, 20)
                 intersect = test_r & b_rect
-                # 如果这个文本块与（带外扩的）图片边框有重叠
                 if intersect.get_area() > 0.1 * b_area:
                     new_r = r | b_rect
                     if new_r != r:
@@ -220,34 +207,32 @@ def get_text_with_links_and_headings(
 
     yielded_figures = set()
     result_lines = []
+    in_code_block = False
     
     for block in blocks:
         b_rect = fitz.Rect(block["bbox"])
         b_area = b_rect.get_area()
         overlapping_fig_idx = None
         
-        text = ""
+        text_str = ""
         if block["type"] == 0:
-            text = "".join([span["text"] for line in block.get("lines", []) for span in line.get("spans", [])]).strip()
+            text_str = "".join([span["text"] for line in block.get("lines", []) for span in line.get("spans", [])]).strip()
 
-        # 判断块是否属于图表（使用扩展后的 render_rects）
         for i, r in enumerate(render_rects):
             intersect = r & b_rect
             intersect_area = intersect.get_area()
-            # 如果是图片块，或者文本块大部分在 render_rect 内部，就算作图表的一部分
             if (b_area > 0 and intersect_area > 0.6 * b_area) or (block["type"] == 1 and intersect_area > 0):
-                # 如果是页眉、Caption、或者太宽的正文且没有和核心元素重叠，则不能被划入图表隐去
                 if block["type"] == 0:
-                    if b_rect.y0 < 50 or b_rect.y1 > page_h - 50:
-                        continue
-                    if text.lower().startswith("figure ") or text.startswith("图") or text.startswith("表"):
-                        continue
-                    if b_rect.width > page_w * 0.7:
-                        continue
+                    if b_rect.y0 < 50 or b_rect.y1 > page_h - 50: continue
+                    if text_str.lower().startswith("figure ") or text_str.startswith("图") or text_str.startswith("表"): continue
+                    if b_rect.width > page_w * 0.7: continue
                 overlapping_fig_idx = i
                 break
 
         if overlapping_fig_idx is not None:
+            if in_code_block:
+                result_lines.append("```\n")
+                in_code_block = False
             if overlapping_fig_idx not in yielded_figures:
                 if images_dir is not None:
                     padded_rect = render_rects[overlapping_fig_idx] + (-10, -10, 10, 10)
@@ -258,34 +243,47 @@ def get_text_with_links_and_headings(
             continue
             
         if block["type"] == 1:
-            # 回退：如果图片块由于某种原因不在 figure_rects 中
+            if in_code_block:
+                result_lines.append("```\n")
+                in_code_block = False
             if images_dir is not None:
-                fallback_idx = overlapping_fig_idx or (len(figure_rects) + 999)
+                fallback_idx = overlapping_fig_idx or (len(original_figure_rects) + 999)
                 image_path = save_image_block(block, images_dir, page_num, fallback_idx)
                 result_lines.append(f"\n![]({image_path})\n")
             continue
 
         if block["type"] != 0:
+            if in_code_block:
+                result_lines.append("```\n")
+                in_code_block = False
             continue
             
         for line in block.get("lines", []):
             line_text = ""
             line_font_sizes = []
             is_bold = False
+            is_mono = True
+            is_white = True
+            chars = 0
             
             for span in line.get("spans", []):
-                text = span["text"]
+                span_text = span["text"]
                 font_size = round(span["size"], 1)
                 font_flags = span.get("flags", 0)
                 span_rect = fitz.Rect(span["bbox"])
                 
-                # 检测粗体 (flags & 2^4 = 16 表示粗体)
                 if font_flags & 16:
                     is_bold = True
                 
+                if span_text.strip():
+                    chars += len(span_text.strip())
+                    if not (font_flags & 8):
+                        is_mono = False
+                    if span.get("color") != 16777215:
+                        is_white = False
+
                 line_font_sizes.append(font_size)
                 
-                # 检查这个文本是否有链接
                 link_url = None
                 for rect_tuple, url in page_links.items():
                     link_rect = fitz.Rect(rect_tuple)
@@ -293,33 +291,49 @@ def get_text_with_links_and_headings(
                         link_url = url
                         break
                 
-                if link_url and text.strip():
-                    line_text += f"[{text}]({link_url})"
+                if link_url and span_text.strip():
+                    line_text += f"[{span_text}]({link_url})"
                 else:
-                    line_text += text
+                    line_text += span_text
             
-            if line_text.strip():
-                # 判断是否为标题
-                if line_font_sizes:
-                    max_font_size = max(line_font_sizes)
+            if chars > 0:
+                if is_mono:
+                    if not in_code_block:
+                        result_lines.append("\n```text")
+                        in_code_block = True
+                    result_lines.append(line_text.rstrip('\r\n'))
+                else:
+                    if in_code_block:
+                        result_lines.append("```\n")
+                        in_code_block = False
                     
-                    # 检查是否匹配标题字体大小
-                    heading_level = heading_map.get(max_font_size)
-                    
-                    # 额外条件：短文本 + 大字体/粗体 更可能是标题
                     text_stripped = line_text.strip()
-                    is_short = len(text_stripped) < 100
                     
-                    if heading_level and is_short:
-                        prefix = "#" * heading_level + " "
-                        line_text = prefix + text_stripped
-                    elif is_bold and max_font_size >= body_size * 1.1 and is_short:
-                        # 粗体且稍大的短文本，作为次级标题
-                        line_text = "### " + text_stripped
-                
-                result_lines.append(line_text)
-    
-    # 确保没有被块覆盖的纯矢量图也输出
+                    if is_white:
+                        result_lines.append(f'<div style="background-color: #333; color: white; padding: 5px;">**{text_stripped}**</div>')
+                        continue
+                    
+                    if line_font_sizes:
+                        max_font_size = max(line_font_sizes)
+                        heading_level = heading_map.get(max_font_size)
+                        is_short = len(text_stripped) < 100
+                        
+                        if heading_level and is_short:
+                            prefix = "#" * heading_level + " "
+                            line_text = prefix + text_stripped
+                        elif is_bold and max_font_size >= body_size * 1.1 and is_short:
+                            line_text = "### " + text_stripped
+                    
+                    result_lines.append(line_text)
+            else:
+                if in_code_block:
+                    result_lines.append("")
+                else:
+                    result_lines.append(line_text.strip())
+                    
+    if in_code_block:
+        result_lines.append("```\n")
+
     for i, r in enumerate(original_figure_rects):
         if i not in yielded_figures:
             if images_dir is not None:
@@ -329,7 +343,6 @@ def get_text_with_links_and_headings(
                 result_lines.append(f"\n![]({image_path})\n")
     
     return "\n".join(result_lines)
-
 
 def pdf_to_markdown(pdf_path, output_path=None):
     """将 PDF 转换为 Markdown"""
