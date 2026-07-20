@@ -123,8 +123,18 @@ def save_rect_as_image(page, rect, images_dir, page_num, image_num):
     images_dir = Path(images_dir)
     images_dir.mkdir(parents=True, exist_ok=True)
     filename = f"image_p{page_num:04d}_{image_num}.png"
-    pix = page.get_pixmap(clip=rect, dpi=200)
-    pix.save(images_dir / filename)
+    # Validate clip rectangle dimensions before rendering
+    if rect.width < 1 or rect.height < 1:
+        return None
+    # Clamp to page bounds
+    rect = rect & page.rect
+    if rect.width < 1 or rect.height < 1:
+        return None
+    try:
+        pix = page.get_pixmap(clip=rect, dpi=200)
+        pix.save(images_dir / filename)
+    except Exception:
+        return None
     return (Path("images") / filename).as_posix()
 
 
@@ -238,7 +248,8 @@ def get_text_with_links_and_headings(
                     padded_rect = render_rects[overlapping_fig_idx] + (-10, -10, 10, 10)
                     padded_rect &= page.rect
                     image_path = save_rect_as_image(page, padded_rect, images_dir, page_num, overlapping_fig_idx)
-                    result_lines.append(f"\n![]({image_path})\n")
+                    if image_path:
+                        result_lines.append(f"\n![]({image_path})\n")
                 yielded_figures.add(overlapping_fig_idx)
             continue
             
@@ -340,7 +351,8 @@ def get_text_with_links_and_headings(
                 padded_rect = render_rects[i] + (-10, -10, 10, 10)
                 padded_rect &= page.rect
                 image_path = save_rect_as_image(page, padded_rect, images_dir, page_num, i)
-                result_lines.append(f"\n![]({image_path})\n")
+                if image_path:
+                    result_lines.append(f"\n![]({image_path})\n")
     
     return "\n".join(result_lines)
 
