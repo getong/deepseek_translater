@@ -11,6 +11,8 @@ import io
 from collections import defaultdict
 from pathlib import Path
 
+from markdown_code import fence_unmarked_code_blocks
+
 try:
     import fitz  # PyMuPDF
 except ImportError:
@@ -413,6 +415,10 @@ def pdf_to_markdown(pdf_path, output_path=None):
     
     # 清理多余空行
     markdown_content = re.sub(r'\n{3,}', '\n\n', markdown_content)
+
+    markdown_content, code_block_count = fence_unmarked_code_blocks(markdown_content)
+    if code_block_count:
+        print(f"✓ 识别并保护代码块: {code_block_count} 个")
     
     # 写入文件
     with open(output_path, 'w', encoding='utf-8') as f:

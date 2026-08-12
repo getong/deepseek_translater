@@ -15,6 +15,7 @@ import glob
 import re
 
 from markdown_cleanup import remove_internal_anchor_artifacts
+from markdown_code import fence_unmarked_code_blocks
 
 MARKDOWN_FORMAT_MARKER = ".markdown_format_v2"
 CALIBRE_CODE_PARAGRAPH_CLASSES = {"calibre26", "calibre33"}
@@ -378,6 +379,10 @@ def clean_calibre_markers(content):
     content, removed_anchors = remove_internal_anchor_artifacts(content)
     if removed_anchors:
         print(f"  Removed {removed_anchors} internal index anchor(s)")
+
+    content, code_block_count = fence_unmarked_code_blocks(content)
+    if code_block_count:
+        print(f"  Protected {code_block_count} unmarked code block(s)")
     
     print("✓ Calibre markers cleaned (including calibre_link patterns)")
     return content

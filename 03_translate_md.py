@@ -14,6 +14,12 @@ from collections import Counter
 
 from deepseek_client import translate as ds_translate, check_api
 from markdown_cleanup import remove_internal_anchor_artifacts
+from markdown_code import (
+    fence_unmarked_code_blocks,
+    partition_fenced_code_blocks,
+    remove_model_added_code_fences,
+    restore_source_code_in_translation,
+)
 
 
 def load_config(temp_dir):
@@ -108,11 +114,9 @@ IMPORTANT REQUIREMENTS:
     - 正文段落不要添加标题标记
     - 如果原文已有markdown标题标记，保持其层级结构
 14. 严格保护代码：
-    - fenced code block中的代码、宏、标识符、字符串、缩进、换行和标点必须逐字符保持不变
-    - 代码块内只翻译自然语言注释，即 // 后或 /* ... */ 内的注释文字
-    - 不要给代码 token 添加 []、()、引号、反引号或任何其他包装符号
+    - 源代码块已由系统从待翻译正文中分离，并将在翻译后按原位置逐字符恢复
+    - 不要自行补写、概括或重复任何源代码，也不要添加代码围栏
     - 行内代码、API名称、类型名、函数名、文件路径和命令必须原样保留
-    - 不要添加、删除或移动代码围栏
 15. 不要输出 idx_bf7c433d 这类 idx_ 加十六进制哈希的内部索引锚点"""
     if custom_prompt:
         base_prompt += f"\n\nADDITIONAL INSTRUCTIONS:\n{custom_prompt}"
@@ -186,93 +190,28 @@ def extract_fenced_code_blocks(text):
     return blocks
 
 
-def code_without_comment_bodies(code):
-    result = []
-    i = 0
-    quote = None
-    while i < len(code):
-        char = code[i]
-        next_char = code[i + 1] if i + 1 < len(code) else ''
-        if quote:
-            if char == '\\' and i + 1 < len(code):
-                i += 2
-                continue
-            if char == quote:
-                result.append(char)
-                quote = None
-            i += 1
-            continue
-        if char in ('"', "'"):
-            quote = char
-            result.append(char)
-            i += 1
-            continue
-        if char == '/' and next_char == '/':
-            result.extend('//')
-            i += 2
-            while i < len(code) and code[i] not in '\r\n': i += 1
-            continue
-        if char == '/' and next_char == '*':
-            result.extend('/*')
-            i += 2
-            while i < len(code):
-                if code[i:i + 2] == '*/':
-                    result.extend('*/')
-                    i += 2
-                    break
-                i += 1
-            continue
-        result.append(char)
-        i += 1
-    normalized_lines = []
-    for line in ''.join(result).splitlines():
-        line = line.rstrip()
-        if line: normalized_lines.append(line)
-    return '\n'.join(normalized_lines)
-
-
 def validate_code_blocks(source, translated):
-    """Ensure translation changed only C-style comment bodies inside code.
-    If it changes non-comment code, we print a warning instead of failing immediately,
-    because sometimes CLI output gets translated and that's okay, or harmless formatting happens.
-    """
+    """Ensure every fenced code block is copied byte-for-byte."""
     source_blocks = extract_fenced_code_blocks(source)
     translated_blocks = extract_fenced_code_blocks(translated)
 
     if len(source_blocks) != len(translated_blocks):
-        print(f"    [Warning] code block count changed ({len(source_blocks)} -> {len(translated_blocks)})")
-        if len(translated_blocks) < len(source_blocks):
-            return False, f"code block count decreased ({len(source_blocks)} -> {len(translated_blocks)})"
-        return True, None
-
-    # helper to normalize the opening fence by removing language tag
-    def normalize_fence(fence):
-        match = re.match(r'^(`{3,}|~{3,})', fence.strip())
-        if match:
-            return match.group(1)
-        return fence.strip()
+        return False, (
+            "code block count changed "
+            f"({len(source_blocks)} -> {len(translated_blocks)})"
+        )
 
     for index, (source_block, translated_block) in enumerate(
         zip(source_blocks, translated_blocks), 1
     ):
-        source_opening, source_code, source_closing = source_block
-        translated_opening, translated_code, translated_closing = translated_block
-        
-        if normalize_fence(source_opening) != normalize_fence(translated_opening):
-            return False, f"code block {index} opening fence token changed"
-        if source_closing.strip() != translated_closing.strip():
+        source_opening, source_body, source_closing = source_block
+        translated_opening, translated_body, translated_closing = translated_block
+        if source_opening != translated_opening:
+            return False, f"code block {index} opening fence changed"
+        if source_body != translated_body:
+            return False, f"code block {index} body was not copied exactly"
+        if source_closing.rstrip('\r\n') != translated_closing.rstrip('\r\n'):
             return False, f"code block {index} closing fence changed"
-            
-        s_code = code_without_comment_bodies(source_code)
-        t_code = code_without_comment_bodies(translated_code)
-        if s_code != t_code:
-            import difflib
-            diff_ratio = difflib.SequenceMatcher(None, s_code, t_code).ratio()
-            # If the code blocks are very different (e.g. translated text in CLI blocks),
-            # we'll just log a warning instead of hard failing.
-            print(f"    [Warning] Non-comment code changed in block {index} (similarity: {diff_ratio:.2f})")
-            # We no longer hard-fail translations for code block content differences
-            # return False, f"non-comment code changed in block {index}"
 
     return True, None
 
@@ -344,13 +283,8 @@ def validate_image_references(source, translated):
     return False, "image reference order changed"
 
 
-def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3):
-    """Translate text using DeepSeek API with retry mechanism"""
-
-    text, removed_source_anchors = remove_internal_anchor_artifacts(text)
-    if removed_source_anchors:
-        print(f"    Removed {removed_source_anchors} internal anchor(s) before translation")
-
+def _translate_prose_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3):
+    """Translate one code-free prose segment with retries."""
     prompt = create_translation_prompt(output_lang, custom_prompt)
 
     for attempt in range(max_retries):
@@ -376,6 +310,14 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
                 )
                 if removed_anchors:
                     print(f"    Removed {removed_anchors} internal anchor(s) from translation")
+                extracted_content, removed_code_fences = remove_model_added_code_fences(
+                    extracted_content
+                )
+                if removed_code_fences:
+                    print(
+                        f"    Removed {removed_code_fences} model-added code "
+                        "fence(s) from translated prose"
+                    )
                 extracted_content, removed_images = remove_added_image_references(
                     text, extracted_content
                 )
@@ -444,6 +386,14 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
                                     f"    Removed {removed_anchors} internal anchor(s) "
                                     "from emergency extraction"
                                 )
+                            emergency_content, removed_code_fences = (
+                                remove_model_added_code_fences(emergency_content)
+                            )
+                            if removed_code_fences:
+                                print(
+                                    f"    Removed {removed_code_fences} model-added "
+                                    "code fence(s) from emergency extraction"
+                                )
                             emergency_content, removed_images = remove_added_image_references(
                                 text, emergency_content
                             )
@@ -477,6 +427,71 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
     return None
 
 
+def _surrounding_whitespace(text):
+    """Return leading whitespace, body, and trailing whitespace."""
+    leading_match = re.match(r"\s*", text)
+    leading = leading_match.group(0)
+    remainder = text[len(leading):]
+    if not remainder:
+        return text, "", ""
+
+    trailing_match = re.search(r"\s*$", remainder)
+    trailing = trailing_match.group(0)
+    body = remainder[:-len(trailing)] if trailing else remainder
+    return leading, body, trailing
+
+
+def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3):
+    """Translate prose while restoring every source code block exactly."""
+    text, code_block_count = fence_unmarked_code_blocks(text)
+    if code_block_count:
+        print(f"    Protected {code_block_count} unmarked code block(s)")
+
+    text, removed_source_anchors = remove_internal_anchor_artifacts(text)
+    if removed_source_anchors:
+        print(f"    Removed {removed_source_anchors} internal anchor(s) before translation")
+
+    segments = partition_fenced_code_blocks(text)
+    source_code_count = sum(is_code for is_code, _ in segments)
+    prose_count = sum(
+        not is_code and bool(segment.strip()) for is_code, segment in segments
+    )
+    if source_code_count:
+        print(
+            f"    Preserving {source_code_count} source code block(s); "
+            f"translating {prose_count} prose segment(s)"
+        )
+
+    translated_segments = []
+    prose_number = 0
+    for is_code, segment in segments:
+        if is_code or not segment.strip():
+            translated_segments.append(segment)
+            continue
+
+        prose_number += 1
+        if prose_count > 1:
+            print(f"    Translating prose segment {prose_number}/{prose_count}")
+        leading, body, trailing = _surrounding_whitespace(segment)
+        translated = _translate_prose_with_deepseek(
+            body, output_lang, custom_prompt, max_retries
+        )
+        if translated is None:
+            return None
+        translated_segments.append(leading + translated + trailing)
+
+    translated_text = "".join(translated_segments)
+    images_are_valid, image_error = validate_image_references(text, translated_text)
+    if not images_are_valid:
+        print(f"    Translation rejected after code restoration because {image_error}")
+        return None
+    code_is_valid, code_error = validate_code_blocks(text, translated_text)
+    if not code_is_valid:
+        print(f"    Translation rejected after code restoration because {code_error}")
+        return None
+    return translated_text
+
+
 def translate_markdown_files(temp_dir, output_lang, custom_prompt=None):
     """Translate all markdown files in temp directory"""
     print(f"Translating markdown files to {output_lang}...")
@@ -503,6 +518,14 @@ def translate_markdown_files(temp_dir, output_lang, custom_prompt=None):
         try:
             with open(md_file, 'r', encoding='utf-8') as f:
                 content = f.read()
+            content, code_block_count = fence_unmarked_code_blocks(content)
+            if code_block_count:
+                with open(md_file, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(
+                    f"  [{i}/{total_files}] Protected {code_block_count} "
+                    f"code block(s) in {filename}"
+                )
             content, removed_source_anchors = remove_internal_anchor_artifacts(content)
             if removed_source_anchors:
                 print(
@@ -528,17 +551,30 @@ def translate_markdown_files(temp_dir, output_lang, custom_prompt=None):
                         f"  [{i}/{total_files}] Removed {removed_anchors} internal "
                         f"anchor(s) from cached {output_filename}"
                     )
+                existing_translation, repaired_code, repair_error = (
+                    restore_source_code_in_translation(content, existing_translation)
+                )
+                if repaired_code:
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        f.write(existing_translation)
+                    print(
+                        f"  [{i}/{total_files}] Restored original code blocks in "
+                        f"cached {output_filename}"
+                    )
                 images_are_valid, image_error = validate_image_references(
                     content, existing_translation
                 )
-                if images_are_valid:
+                code_is_valid, code_error = validate_code_blocks(
+                    content, existing_translation
+                )
+                if images_are_valid and code_is_valid:
                     print(f"  [{i}/{total_files}] Skipping {filename} (already translated)")
                     skipped_count += 1
                     continue
-                print(
-                    f"  [{i}/{total_files}] Re-translating {filename}: "
-                    f"existing output has invalid images ({image_error})"
-                )
+                reason = image_error if not images_are_valid else code_error
+                if repair_error and not code_is_valid:
+                    reason = repair_error
+                print(f"  [{i}/{total_files}] Re-translating {filename}: {reason}")
             except OSError as exc:
                 print(f"  [{i}/{total_files}] Could not validate existing output: {exc}")
         else:
