@@ -13,6 +13,7 @@ import re
 from collections import Counter
 
 from deepseek_client import translate as ds_translate, check_api
+from markdown_cleanup import remove_internal_anchor_artifacts
 
 
 def load_config(temp_dir):
@@ -111,7 +112,8 @@ IMPORTANT REQUIREMENTS:
     - 代码块内只翻译自然语言注释，即 // 后或 /* ... */ 内的注释文字
     - 不要给代码 token 添加 []、()、引号、反引号或任何其他包装符号
     - 行内代码、API名称、类型名、函数名、文件路径和命令必须原样保留
-    - 不要添加、删除或移动代码围栏"""
+    - 不要添加、删除或移动代码围栏
+15. 不要输出 idx_bf7c433d 这类 idx_ 加十六进制哈希的内部索引锚点"""
     if custom_prompt:
         base_prompt += f"\n\nADDITIONAL INSTRUCTIONS:\n{custom_prompt}"
 
@@ -345,6 +347,10 @@ def validate_image_references(source, translated):
 def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3):
     """Translate text using DeepSeek API with retry mechanism"""
 
+    text, removed_source_anchors = remove_internal_anchor_artifacts(text)
+    if removed_source_anchors:
+        print(f"    Removed {removed_source_anchors} internal anchor(s) before translation")
+
     prompt = create_translation_prompt(output_lang, custom_prompt)
 
     for attempt in range(max_retries):
@@ -365,6 +371,11 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
             extracted_content = extract_content_between_markers(translated_text)
 
             if extracted_content and len(extracted_content.strip()) > 0:
+                extracted_content, removed_anchors = remove_internal_anchor_artifacts(
+                    extracted_content
+                )
+                if removed_anchors:
+                    print(f"    Removed {removed_anchors} internal anchor(s) from translation")
                 extracted_content, removed_images = remove_added_image_references(
                     text, extracted_content
                 )
@@ -425,6 +436,14 @@ def translate_with_deepseek(text, output_lang, custom_prompt=None, max_retries=3
                     if start_line != -1 and end_line != -1 and start_line < end_line:
                         emergency_content = '\n'.join(lines[start_line+1:end_line]).strip()
                         if emergency_content:
+                            emergency_content, removed_anchors = remove_internal_anchor_artifacts(
+                                emergency_content
+                            )
+                            if removed_anchors:
+                                print(
+                                    f"    Removed {removed_anchors} internal anchor(s) "
+                                    "from emergency extraction"
+                                )
                             emergency_content, removed_images = remove_added_image_references(
                                 text, emergency_content
                             )
@@ -484,6 +503,12 @@ def translate_markdown_files(temp_dir, output_lang, custom_prompt=None):
         try:
             with open(md_file, 'r', encoding='utf-8') as f:
                 content = f.read()
+            content, removed_source_anchors = remove_internal_anchor_artifacts(content)
+            if removed_source_anchors:
+                print(
+                    f"  [{i}/{total_files}] Removed {removed_source_anchors} "
+                    f"internal anchor(s) from {filename}"
+                )
         except Exception as e:
             print(f"    Error reading {filename}: {e}")
             failed_count += 1
@@ -493,6 +518,16 @@ def translate_markdown_files(temp_dir, output_lang, custom_prompt=None):
             try:
                 with open(output_path, 'r', encoding='utf-8') as f:
                     existing_translation = f.read()
+                existing_translation, removed_anchors = remove_internal_anchor_artifacts(
+                    existing_translation
+                )
+                if removed_anchors:
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        f.write(existing_translation)
+                    print(
+                        f"  [{i}/{total_files}] Removed {removed_anchors} internal "
+                        f"anchor(s) from cached {output_filename}"
+                    )
                 images_are_valid, image_error = validate_image_references(
                     content, existing_translation
                 )

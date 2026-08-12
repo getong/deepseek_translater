@@ -14,6 +14,8 @@ import argparse
 import glob
 import re
 
+from markdown_cleanup import remove_internal_anchor_artifacts
+
 MARKDOWN_FORMAT_MARKER = ".markdown_format_v2"
 CALIBRE_CODE_PARAGRAPH_CLASSES = {"calibre26", "calibre33"}
 
@@ -372,6 +374,10 @@ def clean_calibre_markers(content):
     
     # Clean up multiple consecutive newlines
     content = re.sub(r'\n{3,}', '\n\n', content)
+
+    content, removed_anchors = remove_internal_anchor_artifacts(content)
+    if removed_anchors:
+        print(f"  Removed {removed_anchors} internal index anchor(s)")
     
     print("✓ Calibre markers cleaned (including calibre_link patterns)")
     return content

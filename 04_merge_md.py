@@ -11,6 +11,11 @@ import re
 import argparse
 from pathlib import Path
 
+from markdown_cleanup import (
+    contains_internal_anchor_artifacts,
+    remove_internal_anchor_artifacts,
+)
+
 def load_config(temp_dir):
     """Load configuration from step 1"""
     config_file = os.path.join(temp_dir, 'config.txt')
@@ -37,6 +42,13 @@ def merged_output_is_current(temp_dir, output_file):
     if not os.path.isfile(output_file):
         return False
 
+    try:
+        with open(output_file, 'r', encoding='utf-8') as f:
+            if contains_internal_anchor_artifacts(f.read()):
+                return False
+    except OSError:
+        return False
+
     original_files = glob.glob(os.path.join(temp_dir, 'page*.md'))
     expected_outputs = {
         f"output_{os.path.basename(path)}" for path in original_files
@@ -44,6 +56,14 @@ def merged_output_is_current(temp_dir, output_file):
     output_files = glob.glob(os.path.join(temp_dir, 'output_page*.md'))
     actual_outputs = {os.path.basename(path) for path in output_files}
     if not expected_outputs or actual_outputs != expected_outputs:
+        return False
+
+    try:
+        for path in output_files:
+            with open(path, 'r', encoding='utf-8') as f:
+                if contains_internal_anchor_artifacts(f.read()):
+                    return False
+    except OSError:
         return False
 
     merged_mtime = os.path.getmtime(output_file)
@@ -91,6 +111,11 @@ def merge_markdown_files(temp_dir):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
+            content, removed_anchors = remove_internal_anchor_artifacts(content)
+            if removed_anchors:
+                print(f"    Removed {removed_anchors} internal index anchor(s)")
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
             
             if content:
                 merged_content += content + "\n\n"

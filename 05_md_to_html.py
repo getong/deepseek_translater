@@ -13,6 +13,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from markdown_cleanup import remove_internal_anchor_artifacts
+
 # Try to import markdown, fallback to basic conversion if not available
 try:
     import markdown
@@ -669,6 +671,18 @@ def main():
     md_file = os.path.join(temp_dir, 'output.md')
     if not os.path.exists(md_file):
         print("Error: output.md not found. Run 04_merge_md.py first.")
+        sys.exit(1)
+
+    try:
+        with open(md_file, 'r', encoding='utf-8') as f:
+            md_content = f.read()
+        md_content, removed_anchors = remove_internal_anchor_artifacts(md_content)
+        if removed_anchors:
+            with open(md_file, 'w', encoding='utf-8') as f:
+                f.write(md_content)
+            print(f"✓ Removed {removed_anchors} internal index anchor(s) from output.md")
+    except OSError as exc:
+        print(f"Error cleaning output.md: {exc}")
         sys.exit(1)
     
     # Generate output.html in the temp directory first (without template)
